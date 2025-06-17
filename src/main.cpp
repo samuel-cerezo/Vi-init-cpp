@@ -12,6 +12,45 @@
 #include <filesystem>
 #include "euroc_io.h"
 
+
+struct CameraCalibration {
+    Eigen::Matrix3d K;
+    std::vector<double> distortion_params;
+    std::pair<int, int> image_size;
+};
+
+CameraCalibration load_camera_calibration(const std::string& yaml_file) {
+    YAML::Node config = YAML::LoadFile(yaml_file);
+    CameraCalibration calib;
+
+    auto intrinsics = config["intrinsics"];
+    if (!intrinsics || intrinsics.size() < 4)
+        throw std::runtime_error("Missing or invalid intrinsics");
+
+    double fx = intrinsics[0].as<double>();
+    double fy = intrinsics[1].as<double>();
+    double cx = intrinsics[2].as<double>();
+    double cy = intrinsics[3].as<double>();
+
+    calib.K << fx, 0,  cx,
+                0, fy, cy,
+                0,  0,  1;
+
+    auto distortion = config["distortion_coefficients"];
+    for (size_t i = 0; i < distortion.size(); ++i) {
+        calib.distortion_params.push_back(distortion[i].as<double>());
+    }
+
+    auto resolution = config["resolution"];
+    if (resolution && resolution.size() == 2) {
+        calib.image_size = { resolution[0].as<int>(), resolution[1].as<int>() };
+    }
+
+    return calib;
+}
+
+
+
 Eigen::Matrix4d load_TBS_from_yaml(const std::string& yaml_file) {
     YAML::Node config = YAML::LoadFile(yaml_file);
 
@@ -61,9 +100,6 @@ bool load_gt_csv(const std::string& filename,
     return true;
 }
 
-
-
-
 bool load_imu_csv(const std::string& filename,
                 std::vector<double>& timestamps,
                 std::vector<Eigen::Vector3d>& omega,
@@ -105,9 +141,6 @@ bool load_imu_csv(const std::string& filename,
 
     return true;
 }
-
-
-
 
 
 bool load_cam_csv(const std::string& filename, 
@@ -154,6 +187,37 @@ int main() {
         return -1;
     }
 
+    std::string path_to_yaml_cam = path_to_euroc_data + "/mav0/cam0/sensor.yaml";
+
+    auto [K, distortion_params, image_size] = load_camera_calibration(path_to_yaml_cam);
+
+    //std::cout << "Camera intrinsic matrix K:\n" << K << std::endl;
+    //std::cout << "Inverse K (Kinv):\n" << K.inverse() << std::endl;
+    //std::cout << "Distortion parameters:\n";
+    //for (size_t i = 0; i < distortion_params.size(); ++i) {
+    //    std::cout << "  param[" << i << "] = " << distortion_params[i] << std::endl;
+    //}
+    //std::cout << "Image size: " << image_size.first << " x " << image_size.second << std::endl;
+
+    //int num_frames = 1;
+    //double deltat = 4999936 * 1e-9; // segundos
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     int k=20;   //first frame
 
     if (k >= tcam.size() - 1) {
@@ -185,7 +249,6 @@ int main() {
     for (const auto& w : omega_segment) {
         Rpreint *= lie::ExpMap(w * deltat);
     }
-
 
     // using gt for Rij between tgt[k] y tgt[k+1]
     if (k >= tgt.size() - 1) {

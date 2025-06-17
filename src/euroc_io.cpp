@@ -5,6 +5,7 @@
 #include <iostream>
 #include <yaml-cpp/yaml.h>
 
+
 static bool load_TBS(const std::string& yaml_file, Eigen::Matrix4d& T) {
     YAML::Node config = YAML::LoadFile(yaml_file);
     if (!config["T_BS"]) return false;
