@@ -45,6 +45,7 @@ int main() {
 
     // Frame-by-frame processing
     for (int frame = starting_frame_; frame < cam0_image_names.size() - 1; frame += 5) {
+    //for (int frame = starting_frame_; frame < 30; frame += 5) {
         process_frame_pair(frame, cam0_image_names, tcam, timu, omega, 4999936e-9,
                            tgt, qgt, bg_gt, K, K_cv, dist_cv, tbodycam, tbodyimu, log_file);
     }

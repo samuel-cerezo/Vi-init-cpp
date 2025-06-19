@@ -45,16 +45,9 @@ namespace lie {
             + wx * wx * (1.0 - std::cos(theta));
     }
 
-    /// Logarithmic map from SO(3) to so(3).
+    /// Logarithmic map from SO(3) to so(3) - original version.
     /// Converts a 3x3 rotation matrix into a rotation vector (axis-angle).
-    ///
-    /// Input:
-    /// - R: 3x3 rotation matrix in SO(3)
-    ///
-    /// Output:
-    /// - 3x1 rotation vector in so(3)
     inline Eigen::Vector3d LogMap(const Eigen::Matrix3d& R) {
-        // Identity matrix shortcut
         if ((R - Eigen::Matrix3d::Identity()).norm() < 1e-10) {
             return Eigen::Vector3d::Zero();
         }
@@ -65,14 +58,20 @@ namespace lie {
 
         double sin_theta = std::sqrt(1.0 - cos_theta * cos_theta);
         if (std::abs(sin_theta) < 1e-8) {
-            sin_theta = 1e-8; // avoid division by zero
+            sin_theta = 1e-8;
         }
 
         Eigen::Matrix3d lnR = (theta / (2.0 * sin_theta)) * (R - R.transpose());
         return Eigen::Vector3d(lnR(2, 1), lnR(0, 2), lnR(1, 0));
     }
 
-        /// Templated skew-symmetric for autodiff types (e.g., ceres::Jet)
+    /// Robust LogMap using Eigen::AngleAxis (new version)
+    inline Eigen::Vector3d LogMapRobust(const Eigen::Matrix3d& R) {
+        Eigen::AngleAxisd aa(R);
+        return aa.angle() * aa.axis();
+    }
+
+    /// Templated skew-symmetric for autodiff types (e.g., ceres::Jet)
     template <typename T>
     inline Eigen::Matrix<T, 3, 3> skewTemplated(const Eigen::Matrix<T, 3, 1>& v) {
         Eigen::Matrix<T, 3, 3> m;
@@ -103,8 +102,7 @@ namespace lie {
             + wx * wx * (T(1.0) - cos(theta));
     }
 
-
-    /// Templated logarithmic map from SO(3) to so(3)
+    /// Templated logarithmic map from SO(3) to so(3) - original version
     template <typename T>
     inline Eigen::Matrix<T, 3, 1> LogMapTemplated(const Eigen::Matrix<T, 3, 3>& R) {
         Eigen::Matrix<T, 3, 3> I = Eigen::Matrix<T, 3, 3>::Identity();
@@ -124,5 +122,17 @@ namespace lie {
         return Eigen::Matrix<T, 3, 1>(lnR(2, 1), lnR(0, 2), lnR(1, 0));
     }
 
+    /// Templated robust LogMap using quaternion-based method
+    template <typename T>
+    inline Eigen::Matrix<T, 3, 1> LogMapTemplatedRobust(const Eigen::Matrix<T, 3, 3>& R) {
+        Eigen::Quaternion<T> q(R);
+        T norm_v = sqrt(q.x()*q.x() + q.y()*q.y() + q.z()*q.z());
+        T angle = T(2.0) * atan2(norm_v, q.w());
+        if (norm_v < T(1e-10)) {
+            return Eigen::Matrix<T, 3, 1>::Zero();
+        } else {
+            return angle * Eigen::Matrix<T, 3, 1>(q.x(), q.y(), q.z()) / norm_v;
+        }
+    }
 
 } // namespace lie

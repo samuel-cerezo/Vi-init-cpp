@@ -30,8 +30,11 @@ struct IMURotationResidual {
         Mat3T R_cam_imu_T = R_cam_imu_.cast<T>();
         Mat3T Rij_T = Rij_.cast<T>();
 
-        Mat3T R_err = Rpreint.transpose() * R_cam_imu_T.transpose() * Rij_T * R_cam_imu_T;
-        Vec3T res = lie::LogMapTemplated(R_err);
+        Mat3T Rmeas_imu = R_cam_imu_T.transpose() * Rij_T * R_cam_imu_T;
+        Mat3T R_err = Rpreint.transpose() * Rmeas_imu;
+        
+        //Mat3T R_err = Rpreint.transpose() * R_cam_imu_T.transpose() * Rij_T * R_cam_imu_T;
+        Vec3T res = lie::LogMapTemplatedRobust(R_err);
 
         residuals[0] = res[0];
         residuals[1] = res[1];

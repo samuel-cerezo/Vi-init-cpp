@@ -1,7 +1,7 @@
 // bg_small_angle.cpp
 #include "bg_small_angle.h"
 #include "lie_utils.h"
-
+#include <iostream>
 #include <Eigen/Dense>
 
 // Estimate gyroscope bias using small-angle approximation.
@@ -35,11 +35,20 @@ Eigen::Vector3d bg_small_angle(
     Eigen::Matrix3d R_error = R_integrated.transpose() * R_measured;
 
     // Map rotation error to so(3)
-    Eigen::Vector3d log_rot = lie::LogMap(R_error);
+    Eigen::Vector3d log_rot = lie::LogMapRobust(R_error);
+    
 
     // Bias estimation using small-angle model
     const int n = static_cast<int>(omega_all.size());
+    
+    std::cout << "n: " << n << ", deltat: " << deltat << std::endl;
+    std::cout << "log_rot:\n" << log_rot.transpose() << std::endl;
+    std::cout << "R_imu.transpose():\n" << R_imu.transpose() << std::endl;
+    Eigen::Vector3d rot_scaled = R_imu.transpose() * log_rot;
+    std::cout << "R_imu^T * log_rot = " << rot_scaled.transpose() << std::endl;
+
     Eigen::Vector3d b_g = - (1.0 / (n * deltat)) * (R_imu.transpose() * log_rot);
+    std::cout << "log_rot (C++) = " << log_rot.transpose() << std::endl;
 
     return b_g;
 }

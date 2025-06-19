@@ -12,7 +12,8 @@ C2PResult run_c2p(const std::vector<Eigen::Vector3d>& f0_inliers,
              const std::vector<Eigen::Vector3d>& f1_inliers,
              int frame_idx)
 {
-
+    
+   
     // Add your script directory to sys.path
     py::module_ sys = py::module_::import("sys");
     sys.attr("path").attr("append")("/Users/samucerezo/dev/src/Vi-init-cpp/scripts");
@@ -59,6 +60,8 @@ C2PResult run_c2p(const std::vector<Eigen::Vector3d>& f0_inliers,
         return {Eigen::Matrix3d::Zero(), Eigen::Matrix3d::Zero(), Eigen::Vector3d::Zero(), false, false};
 
     }
+
+    std::cout << "[Frame " << frame_idx << "] Número de inliers: " << f0_inliers.size() << std::endl;
 
 
 
