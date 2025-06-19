@@ -82,12 +82,6 @@ The output will be printed in the terminal and stored in `results.csv`, includin
 - Error using nonlinear Optimization
 - Computation cost (microseconds)
 
-## 🧪 Example Results (MH_02_easy)
-
-| Method                 | Mean Error (rad/s) | Time [μs] |
-|------------------------|--------------------|-----------|
-| Closed-form (Eq. 12)   | 0.017              | 32        |
-| Optimization (Ceres)   | 0.011              | 3713      |
 
 ## 📚 Reference
 
