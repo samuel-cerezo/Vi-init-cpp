@@ -1,4 +1,4 @@
-# 📌 Visual-Inertial Initialization using Small-Angle Approximation
+# 📌 VI Initialization using Small-Angle Approximation
 
 This repository provides a lightweight and modular C++ implementation of a **fully closed-form visual-inertial initialization algorithm**, based on the small rotation approximation.
 
