@@ -1,11 +1,11 @@
-# 📌 Visual-Inertial Initialization using Small-Angle Approximation
+# 📌 VI Initialization using Small-Angle Approximation
 
-This repository provides a lightweight and modular C++ implementation of a **fully closed-form visual-inertial initialization algorithm**, based on the small rotation approximation. The method estimates the initial gyroscope bias, velocity, gravity, and accelerometer bias using minimal assumptions and no iterative optimization by default (though refinement is supported).
+This repository provides a lightweight and modular C++ implementation of a **fully closed-form visual-inertial initialization algorithm**, based on the small rotation approximation.
 
 ## ✨ Features
 
 - Closed-form gyroscope bias estimation from two-view visual correspondences and IMU preintegration
-- Linear estimation of initial velocity, gravity vector, and accelerometer bias
+- Linear estimation gyroscope bias
 - Optional refinement via nonlinear optimization (Ceres Solver)
 - Real-time performance
 - Modular, testable architecture with full support for EuRoC dataset
@@ -52,7 +52,7 @@ ViInitCpp/
 
 ```bash
 # Clone and enter the repository
-git clone https://github.com/your_username/vi-init-cpp.git
+git clone https://github.com/samuel-cerezo/vi-init-cpp.git
 cd vi-init-cpp
 
 # Create and enter build directory
@@ -79,34 +79,15 @@ The output will be printed in the terminal and stored in `results.csv`, includin
 
 - Frame index
 - Error of the closed-form gyroscope bias
-- Optimization error (optional)
-- Time taken (microseconds)
+- Error using nonlinear Optimization
+- Computation cost (microseconds)
 
-## 🧪 Example Results (MH_02_easy)
-
-| Method                 | Mean Error (rad/s) | Time [μs] |
-|------------------------|--------------------|-----------|
-| Closed-form (Eq. 12)   | 0.017              | 32        |
-| Optimization (Ceres)   | 0.011              | 3713      |
 
 ## 📚 Reference
 
-This implementation accompanies the article:
-
-> **Decoupled Visual-Inertial State Initialization with the Small Rotation Approximation**  
-> *Samuel Cerezo, Javier Civera*  
-> Submitted to IEEE Robotics and Automation Letters, 2025
-
 If you use this code, please cite the paper when available.
 
-## 🔧 TODO
-
-- Add multi-frame linear estimation for full state
-- Integrate with VIO backend (e.g., ORB-SLAM3, VINS-Mono)
-- Add plotting script for `results.csv`
 
 ## 📬 Contact
 
-For questions, feel free to open an issue or contact:
-
-- Samuel Cerezo — [samucerezo@domain.com](mailto:samucerezo@domain.com)
+For questions, feel free to open an issue or contact.
