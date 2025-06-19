@@ -15,4 +15,5 @@ bool load_euroc_sequence(const std::string& euroc_path,
                          std::vector<Eigen::Quaterniond>& qgt,
                          std::vector<Eigen::Vector3d>& bg_gt,
                          Eigen::Matrix4d& tbodycam,
-                         Eigen::Matrix4d& tbodyimu);
+                         Eigen::Matrix4d& tbodyimu,
+                         int& starting_frame_);

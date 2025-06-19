@@ -4,7 +4,10 @@
 #include <sstream>
 #include <iostream>
 #include <yaml-cpp/yaml.h>
-
+#include <algorithm>
+#include <limits>
+#include <vector>
+#include <cmath>
 
 static bool load_TBS(const std::string& yaml_file, Eigen::Matrix4d& T) {
     YAML::Node config = YAML::LoadFile(yaml_file);
@@ -44,17 +47,36 @@ static bool load_csv_cam(const std::string& filename, const std::string& base_pa
                          std::vector<double>& timestamps,
                          std::vector<std::string>& filenames)
 {
-    std::ifstream file(filename); std::string line;
+    std::ifstream file(filename);
+    std::string line;
     if (!file.is_open()) return false;
+
     std::getline(file, line); // skip header
+
     while (std::getline(file, line)) {
-        std::stringstream ss(line); std::string ts, fn;
-        std::getline(ss, ts, ','); std::getline(ss, fn);
+        // Eliminar posibles retornos de carro o espacios
+        line.erase(std::remove_if(line.begin(), line.end(),
+                                  [](unsigned char c) { return std::isspace(c); }),
+                   line.end());
+
+        std::stringstream ss(line);
+        std::string ts, fn;
+
+        std::getline(ss, ts, ',');
+        std::getline(ss, fn);
+
+        if (ts.empty() || fn.empty()) continue;
+
         timestamps.push_back(std::stod(ts) * 1e-9);
         filenames.push_back(base_path + "/" + fn);
+
+
     }
     return true;
 }
+
+
+
 
 static bool load_csv_gt(const std::string& filename,
                         std::vector<double>& timestamps,
@@ -87,7 +109,8 @@ bool load_euroc_sequence(const std::string& euroc_path,
                          std::vector<Eigen::Quaterniond>& qgt,
                          std::vector<Eigen::Vector3d>& bg_gt,
                          Eigen::Matrix4d& tbodycam,
-                         Eigen::Matrix4d& tbodyimu)
+                         Eigen::Matrix4d& tbodyimu,
+                        int& starting_frame_)
 {
     std::string imu_file = euroc_path + "/mav0/imu0/data.csv";
     std::string cam_csv = euroc_path + "/mav0/cam0/data.csv";
@@ -96,9 +119,42 @@ bool load_euroc_sequence(const std::string& euroc_path,
     std::string cam_yaml = euroc_path + "/mav0/cam0/sensor.yaml";
     std::string imu_yaml = euroc_path + "/mav0/imu0/sensor.yaml";
 
-    return load_csv_imu(imu_file, timu, omega, acc)
-        && load_csv_cam(cam_csv, cam_img_dir, tcam, cam0_image_names)
-        && load_csv_gt(gt_file, tgt, qgt, bg_gt)
-        && load_TBS(cam_yaml, tbodycam)
-        && load_TBS(imu_yaml, tbodyimu);
+    bool ok = load_csv_imu(imu_file, timu, omega, acc)
+            && load_csv_cam(cam_csv, cam_img_dir, tcam, cam0_image_names)
+            && load_csv_gt(gt_file, tgt, qgt, bg_gt)
+            && load_TBS(cam_yaml, tbodycam)
+            && load_TBS(imu_yaml, tbodyimu);
+    if (!ok) return false;
+
+    // Cálculo del índice starting_frame_
+    double t0_cam = tcam.front();
+    double t0_imu = timu.front();
+    double t0_gt  = tgt.front();
+
+    if (t0_cam >= t0_imu && t0_cam >= t0_gt) {
+        starting_frame_ = 0;
+    } else if (t0_imu >= t0_cam && t0_imu >= t0_gt) {
+        // Buscar el índice de la imagen más cercana a t_imu[0]
+        double min_diff = std::numeric_limits<double>::max();
+        for (size_t i = 0; i < tcam.size(); ++i) {
+            double diff = std::abs(timu[0] - tcam[i]);
+            if (diff < min_diff) {
+                min_diff = diff;
+                starting_frame_ = static_cast<int>(i);
+            }
+        }
+    } else {
+        // Buscar el índice de la imagen más cercana a t_gt[0]
+        double min_diff = std::numeric_limits<double>::max();
+        for (size_t i = 0; i < tcam.size(); ++i) {
+            double diff = std::abs(tgt[0] - tcam[i]);
+            if (diff < min_diff) {
+                min_diff = diff;
+                starting_frame_ = static_cast<int>(i);
+            }
+        }
+    }
+
+    return true;
+    
 }

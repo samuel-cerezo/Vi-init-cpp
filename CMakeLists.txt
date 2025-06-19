@@ -6,21 +6,44 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 include_directories(include)
 
-# Eigen (desde Homebrew)
+# Eigen
 find_package(Eigen3 REQUIRED)
 include_directories(${EIGEN3_INCLUDE_DIR})
 
-# yaml-cpp desde Homebrew
+# OpenCV
+set(OpenCV_DIR /opt/homebrew/opt/opencv/lib/cmake/opencv4)
+find_package(OpenCV REQUIRED)
+include_directories(${OpenCV_INCLUDE_DIRS})
+
+# yaml-cpp
 set(YAML_CPP_DIR "/opt/homebrew/opt/yaml-cpp")
 include_directories(${YAML_CPP_DIR}/include)
 link_directories(${YAML_CPP_DIR}/lib)
 
-# Archivos fuente
+# pybind11 + Python 3.8
+set(PYTHON_VERSION 3.8)
+set(PYTHON_INCLUDE_DIR /Library/Frameworks/Python.framework/Versions/${PYTHON_VERSION}/include/python${PYTHON_VERSION})
+set(PYTHON_LIBRARY /Library/Frameworks/Python.framework/Versions/${PYTHON_VERSION}/lib/libpython${PYTHON_VERSION}.dylib)
+include_directories(${PYTHON_INCLUDE_DIR})
+link_directories(/Library/Frameworks/Python.framework/Versions/${PYTHON_VERSION}/lib)
+include_directories(/Library/Frameworks/Python.framework/Versions/${PYTHON_VERSION}/lib/python${PYTHON_VERSION}/site-packages/pybind11/include)
+
+# Ceres Solver
+find_package(Ceres REQUIRED)
+include_directories(${CERES_INCLUDE_DIRS})
+
+# Ejecutable
 add_executable(vi_init
     src/main.cpp
     src/bg_small_angle.cpp
+    src/bg_optimization.cpp  
     src/euroc_io.cpp
+    src/c2p_wrapper.cpp
 )
 
-# Enlazar con yaml-cpp
-target_link_libraries(vi_init yaml-cpp)
+target_link_libraries(vi_init
+    yaml-cpp
+    ${OpenCV_LIBS}
+    ${PYTHON_LIBRARY}
+    ${CERES_LIBRARIES}       
+)
