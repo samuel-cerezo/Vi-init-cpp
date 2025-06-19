@@ -4,6 +4,7 @@ project(vi_init_cpp)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+# Include headers
 include_directories(include)
 
 # Eigen
@@ -32,18 +33,21 @@ include_directories(/Library/Frameworks/Python.framework/Versions/${PYTHON_VERSI
 find_package(Ceres REQUIRED)
 include_directories(${CERES_INCLUDE_DIRS})
 
-# Ejecutable
+# Executable and source files
 add_executable(vi_init
     src/main.cpp
     src/bg_small_angle.cpp
     src/bg_optimization.cpp  
     src/euroc_io.cpp
     src/c2p_wrapper.cpp
+    src/camera_utils.cpp
+    src/feature_tracking.cpp
+    src/frame_processor.cpp
 )
 
 target_link_libraries(vi_init
     yaml-cpp
     ${OpenCV_LIBS}
     ${PYTHON_LIBRARY}
-    ${CERES_LIBRARIES}       
+    ${CERES_LIBRARIES}
 )
