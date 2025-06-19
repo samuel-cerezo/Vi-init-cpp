@@ -1,11 +1,11 @@
 # 📌 Visual-Inertial Initialization using Small-Angle Approximation
 
-This repository provides a lightweight and modular C++ implementation of a **fully closed-form visual-inertial initialization algorithm**, based on the small rotation approximation. The method estimates the initial gyroscope bias, velocity, gravity, and accelerometer bias using minimal assumptions and no iterative optimization by default (though refinement is supported).
+This repository provides a lightweight and modular C++ implementation of a **fully closed-form visual-inertial initialization algorithm**, based on the small rotation approximation.
 
 ## ✨ Features
 
 - Closed-form gyroscope bias estimation from two-view visual correspondences and IMU preintegration
-- Linear estimation of initial velocity, gravity vector, and accelerometer bias
+- Linear estimation gyroscope bias
 - Optional refinement via nonlinear optimization (Ceres Solver)
 - Real-time performance
 - Modular, testable architecture with full support for EuRoC dataset
