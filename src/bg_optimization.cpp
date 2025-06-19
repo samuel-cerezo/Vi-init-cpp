@@ -63,7 +63,7 @@ Eigen::Vector3d bg_optimization(const std::vector<Eigen::Vector3d>& omega_all_ve
         omega_all.col(i) = omega_all_vec[i];
     }
 
-    std::cout << "R_cam_imu = \n" << R_cam_imu << std::endl;
+    //std::cout << "R_cam_imu = \n" << R_cam_imu << std::endl;
 
 
     ceres::CostFunction* cost_function =
@@ -80,7 +80,7 @@ Eigen::Vector3d bg_optimization(const std::vector<Eigen::Vector3d>& omega_all_ve
     options.parameter_tolerance = 1e-14;
     options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
 
-    options.minimizer_progress_to_stdout = true;
+    options.minimizer_progress_to_stdout = false;
 
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);

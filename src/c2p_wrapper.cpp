@@ -25,12 +25,12 @@ C2PResult run_c2p(const std::vector<Eigen::Vector3d>& f0_inliers,
         //std::cout << "[INFO] Módulo 'nonmin_pose_wrapper' importado correctamente." << std::endl;
 
         if (!py::hasattr(wrapper, "c2p_")) {
-            throw std::runtime_error("El módulo no tiene la función 'c2p_'");
+            throw std::runtime_error("The module does not have the function 'c2p_'");
         }
         //std::cout << "[INFO] Función 'c2p_' encontrada en el módulo." << std::endl;
 
     } catch (const py::error_already_set& e) {
-        std::cerr << "[ERROR] Fallo al importar el módulo o acceder a 'c2p_':\n" << e.what() << std::endl;
+        std::cerr << "[ERROR importing 'c2p_':\n" << e.what() << std::endl;
         return {Eigen::Matrix3d::Zero(), Eigen::Matrix3d::Zero(), Eigen::Vector3d::Zero(), false, false};
     } catch (const std::exception& e) {
         std::cerr << "[ERROR] " << e.what() << std::endl;
@@ -48,22 +48,18 @@ C2PResult run_c2p(const std::vector<Eigen::Vector3d>& f0_inliers,
     }
 
     if (f0_inliers.empty() || f1_inliers.empty()) {
-        std::cerr << "[Frame " << frame_idx << "] Error: f0_inliers o f1_inliers está vacío." << std::endl;
+        std::cerr << "[Frame " << frame_idx << "] Error: f0_inliers or f1_inliers is empty." << std::endl;
         return {Eigen::Matrix3d::Zero(), Eigen::Matrix3d::Zero(), Eigen::Vector3d::Zero(), false, false};
 
     }
 
     if (f0_inliers.size() != f1_inliers.size()) {
-        std::cerr << "[Frame " << frame_idx << "] Error: número de inliers no coincide: f0=" 
+        std::cerr << "[Frame " << frame_idx << "] Error:number of inliers does not match: f0=" 
                 << f0_inliers.size() << ", f1=" << f1_inliers.size() << std::endl;
         return {Eigen::Matrix3d::Zero(), Eigen::Matrix3d::Zero(), Eigen::Vector3d::Zero(), false, false};
 
     }
 
-    //for (size_t i = 0; i < std::min(size_t(3), f0_inliers.size()); ++i) {
-    //    std::cout << "  f0[" << i << "]: " << f0_inliers[i].transpose() 
-    //            << " | f1[" << i << "]: " << f1_inliers[i].transpose() << std::endl;
-    //}
 
 
     Eigen::MatrixXd f0_mat(3, N), f1_mat(3, N);
@@ -77,7 +73,6 @@ C2PResult run_c2p(const std::vector<Eigen::Vector3d>& f0_inliers,
 
     try {
         //std::cout << "[Frame " << frame_idx << "] Ejecutando c2p_ con " << N << " puntos" << std::endl; 
-
         //std::cout << "[Frame " << frame_idx << "] f0_mat: " << f0_mat.rows() << "x" << f0_mat.cols() << std::endl;
         //std::cout << "[Frame " << frame_idx << "] f1_mat: " << f1_mat.rows() << "x" << f1_mat.cols() << std::endl;
 
@@ -89,7 +84,7 @@ C2PResult run_c2p(const std::vector<Eigen::Vector3d>& f0_inliers,
 
         auto result_obj = wrapper.attr("c2p_")(f0_np, f1_np);
         
-        std::cout << "[Frame " << frame_idx << "] c2p_ ejecutado correctamente" << std::endl; 
+        //std::cout << "[Frame " << frame_idx << "] c2p_ ejecutado correctamente" << std::endl; 
 
         if (!py::isinstance<py::tuple>(result_obj)) {
             throw std::runtime_error("Expected a tuple return from c2p_");
@@ -97,8 +92,6 @@ C2PResult run_c2p(const std::vector<Eigen::Vector3d>& f0_inliers,
 
         auto result = result_obj.cast<py::tuple>();
         
-
-
 
         auto E_np = result[0].cast<py::array_t<double>>();
         auto R_np = result[1].cast<py::array_t<double>>();
@@ -110,15 +103,6 @@ C2PResult run_c2p(const std::vector<Eigen::Vector3d>& f0_inliers,
         Eigen::Matrix3d R = Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(R_np.data());
         Eigen::Vector3d t = Eigen::Map<const Eigen::Vector3d>(t_np.data());
 
-        //std::cout << "[c2p] Success. Optimal: " << is_optimal << ", Pure rot: " << is_pure_rot << std::endl;
-
-        
-        //for (ssize_t i = 0; i < E.shape(0); ++i) {
-        //    for (ssize_t j = 0; j < E.shape(1); ++j) {
-        //        std::cout << E_unchecked(i, j) << " ";
-        //    }
-        //    std::cout << std::endl;
-        //}
 
         return {E, R, t, is_optimal, is_pure_rot};
 
