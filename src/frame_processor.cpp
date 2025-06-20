@@ -4,11 +4,24 @@
 #include "bg_small_angle.h"
 #include "bg_optimization.h"
 #include "c2p_wrapper.h"
-
+#include <ceres/ceres.h>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/calib3d.hpp>
 #include <chrono>
 #include <iostream>
+
+void debug_essential(const cv::Mat& old_undist, const cv::Mat& new_undist, const cv::Mat& mask) {
+    std::cout << "=== DEBUG EssentialMat (C++) ===" << std::endl;
+    std::cout << "old_undist: " << old_undist.rows << "x" << old_undist.cols 
+              << ", type = " << old_undist.type() << std::endl;
+    std::cout << "new_undist: " << new_undist.rows << "x" << new_undist.cols 
+              << ", type = " << new_undist.type() << std::endl;
+    std::cout << "mask: " << mask.rows << "x" << mask.cols 
+              << ", type = " << mask.type() << std::endl;
+    int inliers = cv::countNonZero(mask);
+    std::cout << "Inliers count: " << inliers << std::endl;
+}
+
 
 void evaluate_rotation_error(const std::vector<Eigen::Vector3d>& omega_all_vec,
                               double deltat,
@@ -113,18 +126,17 @@ void process_frame_pair(int starting_frame,
 
     cv::theRNG().state = 42;
 
-    mask = cv::Mat::ones(old_undist.rows, 1, CV_8U);
+    //mask = cv::Mat::ones(old_undist.rows, 1, CV_8U);
 
 
     // Estimate Essential matrix to get inliers
-    cv::findEssentialMat(old_undist, new_undist, K_cv, cv::RANSAC, 0.999, 1.0, mask);
+    //cv::findEssentialMat(old_undist, new_undist, K_cv, cv::RANSAC, 0.999, 2.0, mask);
+    cv::Mat E = cv::findEssentialMat(old_undist, new_undist, K_cv, cv::RANSAC, 0.999, 1.0, mask);
+
+   // debug_essential(old_undist, new_undist, mask);
 
     std::vector<Eigen::Vector3d> f0_inliers, f1_inliers;
     int total_valid = 0, discarded = 0;
-
-
-    mask = cv::Mat::ones(old_undist.rows, 1, CV_8U);
-
 
     for (int i = 0; i < num_points; ++i) {
         double norm_f0 = f0.col(i).norm();
@@ -181,6 +193,7 @@ void process_frame_pair(int starting_frame,
         omega_all.push_back(dtheta);
     }
 
+    /*
     std::cout << "== Debug Info ==" << std::endl;
     std::cout << "omega_all size: " << omega_all.size() << std::endl;
     std::cout << "deltat: " << deltat << std::endl;
@@ -191,11 +204,12 @@ void process_frame_pair(int starting_frame,
     for (int i = 0; i < std::min<size_t>(3, omega_all.size()); ++i) {
         std::cout << i << ": " << omega_all[i].transpose() << std::endl;
     }
+    */
 
     Eigen::Matrix3d R_imu = tbodyimu.block<3, 3>(0, 0);
     Eigen::Matrix3d R_cam = tbodycam.block<3, 3>(0, 0);
-    std::cout << "R_cam:\n" << R_cam << std::endl;
-    std::cout << "R_imu:\n" << R_imu << std::endl;
+    //std::cout << "R_cam:\n" << R_cam << std::endl;
+    //std::cout << "R_imu:\n" << R_imu << std::endl;
 
 
 
@@ -210,18 +224,18 @@ void process_frame_pair(int starting_frame,
         omega_scaled.push_back(o / deltat);
 
     auto t_opt_start = std::chrono::high_resolution_clock::now();
-    Eigen::Vector3d bgopt = bg_optimization(omega_all, deltat, R01, Eigen::Vector3d::Zero(), tbodycam, tbodyimu);
+    auto [bgopt, cost, summary] = bg_optimization(omega_all, deltat, R01, b_g, tbodycam, tbodyimu);
     auto t_opt_end = std::chrono::high_resolution_clock::now();
 
-    std::cout << "== Rotation Error: Optimizado ==" << std::endl;
+
+    //std::cout << "== Rotation Error: Optimizado ==" << std::endl;
     // Evaluar error para bg_approx
-    evaluate_rotation_error(omega_all, deltat, R01, b_g, tbodycam, tbodyimu);
-    std::cout << "== Rotation Error: aproximado ==" << std::endl;
+    //evaluate_rotation_error(omega_all, deltat, R01, b_g, tbodycam, tbodyimu);
+    //std::cout << "== Rotation Error: aproximado ==" << std::endl;
     // Evaluar error para bg_opt
-    evaluate_rotation_error(omega_all, deltat, R01, bgopt, tbodycam, tbodyimu);
+    //evaluate_rotation_error(omega_all, deltat, R01, bgopt, tbodycam, tbodyimu);
 
 
-    
     // Compare with ground truth
     auto it_gt = std::min_element(tgt.begin(), tgt.end(), [t1](double a, double b) {
         return std::abs(a - t1) < std::abs(b - t1);

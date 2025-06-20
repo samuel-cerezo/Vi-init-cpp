@@ -61,7 +61,7 @@ C2PResult run_c2p(const std::vector<Eigen::Vector3d>& f0_inliers,
 
     }
 
-    std::cout << "[Frame " << frame_idx << "] Número de inliers: " << f0_inliers.size() << std::endl;
+    //std::cout << "[Frame " << frame_idx << "] Número de inliers: " << f0_inliers.size() << std::endl;
 
 
 

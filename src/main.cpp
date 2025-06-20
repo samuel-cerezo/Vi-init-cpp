@@ -5,6 +5,7 @@
 #include "frame_processor.h"
 #include "euroc_io.h"
 #include "c2p_wrapper.h"
+#include <filesystem> 
 
 #include <pybind11/embed.h>
 #include <opencv2/core/eigen.hpp>
@@ -16,7 +17,7 @@ namespace py = pybind11;
 
 int main() {
     py::scoped_interpreter guard{};
-    std::string path_to_euroc_data = "/Users/samucerezo/dev/src/Vi-init-cpp/data/MH_02_easy";
+    std::string path_to_euroc_data = "/Users/samucerezo/dev/src/Vi-init-cpp/data/MH_02";
 
     // Dataset containers
     std::vector<double> timu, tcam, tgt;
@@ -39,8 +40,18 @@ int main() {
     cv::Mat K_cv; cv::eigen2cv(K, K_cv);
     cv::Mat dist_cv(distortion_params);
 
+
+    // results folder
+    std::filesystem::path results_dir = std::filesystem::path("../results");
+    if (!std::filesystem::exists(results_dir)) {
+        std::filesystem::create_directories(results_dir);
+    }
     // Open log file
-    std::ofstream log_file("results.csv", std::ios::out);
+    std::filesystem::path dataset_path(path_to_euroc_data);
+    std::string dataset_name = dataset_path.filename().string();  // e.g., "MH_02"
+    std::string output_filename = results_dir / ("results_" + dataset_name + ".csv");
+
+    std::ofstream log_file(output_filename, std::ios::out);
     log_file << "frame,error_aprox,elapsed_aprox_us,error_opt,elapsed_opt_us\n";
 
     // Frame-by-frame processing

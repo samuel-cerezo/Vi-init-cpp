@@ -13,12 +13,16 @@ bool detect_and_track_features(const std::string& img1_path,
     if (img1.empty() || img2.empty()) return false;
 
     std::vector<cv::Point2f> points1;
-    cv::goodFeaturesToTrack(img1, points1, 300, 0.01, 10);
+    cv::goodFeaturesToTrack(img1, points1, 1000, 0.01, 10);
     if (points1.empty()) return false;
 
     std::vector<uchar> status;
     std::vector<float> err;
-    cv::calcOpticalFlowPyrLK(img1, img2, points1, new_pts, status, err);
+    
+    cv::Size winSize(21, 21);
+    int maxLevel = 3;
+    cv::TermCriteria criteria(cv::TermCriteria::COUNT + cv::TermCriteria::EPS, 30, 0.01);
+    cv::calcOpticalFlowPyrLK(img1, img2, points1, new_pts, status, err, winSize, maxLevel, criteria);
 
     // Filter valid tracked points
     old_pts.clear();

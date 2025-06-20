@@ -48,12 +48,14 @@ struct IMURotationResidual {
     const double deltat_;
 };
 
-Eigen::Vector3d bg_optimization(const std::vector<Eigen::Vector3d>& omega_all_vec,
-                                double deltat,
-                                const Eigen::Matrix3d& Rij,
-                                const Eigen::Vector3d& bg0,
-                                const Eigen::Matrix4d& tbodycam,
-                                const Eigen::Matrix4d& tbodyimu){
+std::tuple<Eigen::Vector3d, double, ceres::Solver::Summary>
+bg_optimization (const std::vector<Eigen::Vector3d>& omega_all_vec,
+                      double deltat,
+                      const Eigen::Matrix3d& Rij,
+                      const Eigen::Vector3d& bg0,
+                      const Eigen::Matrix4d& tbodycam,
+                      const Eigen::Matrix4d& tbodyimu)
+{
     Eigen::Matrix3d R_cam = tbodycam.block<3, 3>(0, 0);
     Eigen::Matrix3d R_imu = tbodyimu.block<3, 3>(0, 0);
     Eigen::Matrix3d R_cam_imu = R_cam * R_imu.transpose();
@@ -66,9 +68,6 @@ Eigen::Vector3d bg_optimization(const std::vector<Eigen::Vector3d>& omega_all_ve
         omega_all.col(i) = omega_all_vec[i];
     }
 
-    //std::cout << "R_cam_imu = \n" << R_cam_imu << std::endl;
-
-
     ceres::CostFunction* cost_function =
         new ceres::AutoDiffCostFunction<IMURotationResidual, 3, 3>(
             new IMURotationResidual(Rij, omega_all, R_cam_imu, deltat));
@@ -76,17 +75,16 @@ Eigen::Vector3d bg_optimization(const std::vector<Eigen::Vector3d>& omega_all_ve
     problem.AddResidualBlock(cost_function, nullptr, bg.data());
 
     ceres::Solver::Options options;
-
     options.max_num_iterations = 1000;
     options.function_tolerance = 1e-14;
     options.gradient_tolerance = 1e-14;
     options.parameter_tolerance = 1e-14;
     options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
-
     options.minimizer_progress_to_stdout = false;
 
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
 
-    return bg;
+    double final_cost = problem.Evaluate(ceres::Problem::EvaluateOptions(), nullptr, nullptr, nullptr, nullptr);
+    return {bg, final_cost, summary};
 }
