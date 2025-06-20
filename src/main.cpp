@@ -6,7 +6,6 @@
 #include "euroc_io.h"
 #include "c2p_wrapper.h"
 #include <filesystem> 
-
 #include <pybind11/embed.h>
 #include <opencv2/core/eigen.hpp>
 #include <fstream>
@@ -15,9 +14,16 @@
 
 namespace py = pybind11;
 
-int main() {
+int main(int argc, char** argv) {
     py::scoped_interpreter guard{};
-    std::string path_to_euroc_data = "/Users/samucerezo/dev/src/Vi-init-cpp/data/MH_02";
+
+        if (argc < 2) {
+        std::cerr << "Use: " << argv[0] << " <path_to_dataset>" << std::endl;
+        return -1;
+    }
+    
+    std::string path_to_euroc_data = argv[1];
+
 
     // Dataset containers
     std::vector<double> timu, tcam, tgt;
