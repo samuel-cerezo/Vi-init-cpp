@@ -31,21 +31,17 @@ Eigen::Vector3d bg_small_angle(
     Eigen::Matrix3d R_integrated = R_imu * Rpreint * R_imu.transpose();
     Eigen::Matrix3d R_measured = R_cam * R_ij * R_cam.transpose();
 
-    // Compute the rotational error
-    Eigen::Matrix3d R_error = R_integrated.transpose() * R_measured;
 
-    // Map rotation error to so(3)
+
+    Eigen::Matrix3d R_error = Rpreint.transpose() * R_ij;
+
     Eigen::Vector3d log_rot = lie::LogMap(R_error);
     
     //std::cout << "[DEBUG] Rij:\n" << R_ij << std::endl;
 
-
-    // Bias estimation using small-angle model
     const int n = static_cast<int>(omega_all.size());
-    
-    Eigen::Vector3d rot_scaled = R_imu.transpose() * log_rot;
 
-    Eigen::Vector3d b_g = - (1.0 / (n * deltat)) * (R_imu.transpose() * log_rot);
+    Eigen::Vector3d b_g = - (1.0 / (n * deltat)) * (log_rot);
 
     return b_g;
 }

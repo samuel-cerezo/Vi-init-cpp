@@ -31,10 +31,11 @@ struct IMURotationResidual {
         Mat3T Rij_T = Rij_.cast<T>();
 
         Mat3T Rmeas_imu = R_cam_imu_T.transpose() * Rij_T * R_cam_imu_T;
-        Mat3T R_err = Rpreint.transpose() * Rmeas_imu;
-        
+       // Mat3T R_err = Rpreint.transpose() * Rmeas_imu;
+        Mat3T R_err = Rpreint.transpose() * Rij_;
+
         //Mat3T R_err = Rpreint.transpose() * R_cam_imu_T.transpose() * Rij_T * R_cam_imu_T;
-        Vec3T res = lie::LogMapTemplatedRobust(R_err);
+        Vec3T res = lie::LogMapTemplatedR(R_err);
 
         residuals[0] = res[0];
         residuals[1] = res[1];
@@ -75,10 +76,10 @@ bg_optimization (const std::vector<Eigen::Vector3d>& omega_all_vec,
     problem.AddResidualBlock(cost_function, nullptr, bg.data());
 
     ceres::Solver::Options options;
-    options.max_num_iterations = 1000;
-    options.function_tolerance = 1e-14;
-    options.gradient_tolerance = 1e-14;
-    options.parameter_tolerance = 1e-14;
+    options.max_num_iterations = 10000;
+    options.function_tolerance = 1e-16;
+    options.gradient_tolerance = 1e-16;
+    options.parameter_tolerance = 1e-16;
     options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
     options.minimizer_progress_to_stdout = false;
 
