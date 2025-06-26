@@ -37,12 +37,14 @@ include_directories(${CERES_INCLUDE_DIRS})
 add_executable(vi_init
     src/main.cpp
     src/bg_small_angle.cpp
-    src/bg_optimization.cpp  
+    src/bg_optimization.cpp
     src/euroc_io.cpp
     src/c2p_wrapper.cpp
     src/camera_utils.cpp
     src/feature_tracking.cpp
     src/frame_processor.cpp
+    src/multiframe_processor.cpp
+    src/estimate_state_martinelli.cpp
 )
 
 target_link_libraries(vi_init

@@ -8,8 +8,10 @@ struct IMURotationResidual {
     IMURotationResidual(const Eigen::Matrix3d& Rij,
                         const Eigen::MatrixXd& omega_all,
                         const Eigen::Matrix3d& R_cam_imu,
-                        double deltat)
-        : Rij_(Rij), omega_all_(omega_all), R_cam_imu_(R_cam_imu), deltat_(deltat) {}
+                        double deltat,
+                        const Eigen::Matrix3d& R_cam,
+                        const Eigen::Matrix3d& R_imu)
+        : Rij_(Rij), omega_all_(omega_all), R_cam_imu_(R_cam_imu), deltat_(deltat), R_cam_(R_cam), R_imu_(R_imu) {}
 
     template <typename T>
     bool operator()(const T* const bg, T* residuals) const {
@@ -26,16 +28,18 @@ struct IMURotationResidual {
             Vec3T omega = omega_i - Eigen::Map<const Vec3T>(bg);
             Rpreint = Rpreint * lie::ExpMapTemplated(omega * T(deltat_));
         }
-
+        // retrieving transf matrices
         Mat3T R_cam_imu_T = R_cam_imu_.cast<T>();
+        Mat3T R_cam_T = R_cam_.cast<T>();
+        Mat3T R_imu_T = R_imu_.cast<T>();
         Mat3T Rij_T = Rij_.cast<T>();
 
-        Mat3T Rmeas_imu = R_cam_imu_T.transpose() * Rij_T * R_cam_imu_T;
-       // Mat3T R_err = Rpreint.transpose() * Rmeas_imu;
-        Mat3T R_err = Rpreint.transpose() * Rij_;
-
-        //Mat3T R_err = Rpreint.transpose() * R_cam_imu_T.transpose() * Rij_T * R_cam_imu_T;
-        Vec3T res = lie::LogMapTemplatedR(R_err);
+        // Compose integrated and measured rotation in the same reference frame
+        Mat3T R_integrated_T = R_imu_T * Rpreint * R_imu_T.transpose();
+        Mat3T R_measured_T = R_cam_T * Rij_T * R_cam_T.transpose();
+        Mat3T R_error = R_integrated_T.transpose() * R_cam_T * Rij_T * R_cam_T.transpose();
+        
+        Vec3T res = lie::LogMapTemplated(R_error);
 
         residuals[0] = res[0];
         residuals[1] = res[1];
@@ -46,6 +50,8 @@ struct IMURotationResidual {
     const Eigen::Matrix3d Rij_;
     const Eigen::MatrixXd omega_all_;
     const Eigen::Matrix3d R_cam_imu_;
+    const Eigen::Matrix3d R_cam_;
+    const Eigen::Matrix3d R_imu_;
     const double deltat_;
 };
 
@@ -71,7 +77,7 @@ bg_optimization (const std::vector<Eigen::Vector3d>& omega_all_vec,
 
     ceres::CostFunction* cost_function =
         new ceres::AutoDiffCostFunction<IMURotationResidual, 3, 3>(
-            new IMURotationResidual(Rij, omega_all, R_cam_imu, deltat));
+            new IMURotationResidual(Rij, omega_all, R_cam_imu, deltat, R_cam, R_imu));
 
     problem.AddResidualBlock(cost_function, nullptr, bg.data());
 

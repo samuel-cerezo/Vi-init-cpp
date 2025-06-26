@@ -76,28 +76,40 @@ static bool load_csv_cam(const std::string& filename, const std::string& base_pa
 }
 
 
-
-
 static bool load_csv_gt(const std::string& filename,
                         std::vector<double>& timestamps,
                         std::vector<Eigen::Quaterniond>& quats,
-                        std::vector<Eigen::Vector3d>& biases)
+                        std::vector<Eigen::Vector3d>& biases_g,
+                        std::vector<Eigen::Vector3d>& biases_a,
+                        std::vector<Eigen::Vector3d>& velocities,
+                        std::vector<Eigen::Vector3d>& gravities,
+                        std::vector<Eigen::Vector3d>& positions)
 {
-    std::ifstream file(filename); std::string line;
+    std::ifstream file(filename);
+    std::string line;
     if (!file.is_open()) return false;
+
     std::getline(file, line); // skip header
+
     while (std::getline(file, line)) {
-        std::stringstream ss(line); std::string v;
+        std::stringstream ss(line);
+        std::string v;
         std::vector<double> row;
         while (std::getline(ss, v, ',')) row.push_back(std::stod(v));
-        if (row.size() >= 15) {
+        if (row.size() >= 17) {
             timestamps.push_back(row[0] * 1e-9);
-            quats.emplace_back(row[7], row[4], row[5], row[6]);  // qw, qx, qy, qz
-            biases.emplace_back(row[11], row[12], row[13]);
+            positions.emplace_back(row[1], row[2], row[3]);  // x, y, z
+            quats.emplace_back(row[4], row[5], row[6], row[7]);  // qw, qx, qy, qz
+            velocities.emplace_back(row[8], row[9], row[10]);
+            biases_g.emplace_back(row[11], row[12], row[13]);
+            biases_a.emplace_back(row[14], row[15], row[16]);
+            gravities.emplace_back(0.0, 0.0, -9.81); // fijo por defecto
         }
     }
     return true;
 }
+
+
 
 bool load_euroc_sequence(const std::string& euroc_path,
                          std::vector<double>& timu,
@@ -108,6 +120,10 @@ bool load_euroc_sequence(const std::string& euroc_path,
                          std::vector<double>& tgt,
                          std::vector<Eigen::Quaterniond>& qgt,
                          std::vector<Eigen::Vector3d>& bg_gt,
+                         std::vector<Eigen::Vector3d>& ba_gt,
+                         std::vector<Eigen::Vector3d>& v_gt,
+                         std::vector<Eigen::Vector3d>& g_gt,
+                         std::vector<Eigen::Vector3d>& p_gt,
                          Eigen::Matrix4d& tbodycam,
                          Eigen::Matrix4d& tbodyimu,
                         int& starting_frame_)
@@ -121,10 +137,14 @@ bool load_euroc_sequence(const std::string& euroc_path,
 
     bool ok = load_csv_imu(imu_file, timu, omega, acc)
             && load_csv_cam(cam_csv, cam_img_dir, tcam, cam0_image_names)
-            && load_csv_gt(gt_file, tgt, qgt, bg_gt)
+            && load_csv_gt(gt_file, tgt, qgt, bg_gt, ba_gt, v_gt, g_gt, p_gt)
             && load_TBS(cam_yaml, tbodycam)
             && load_TBS(imu_yaml, tbodyimu);
     if (!ok) return false;
+
+    std::cerr << "IMU samples: " << timu.size() << std::endl;
+    std::cerr << "CAM samples: " << tcam.size() << std::endl;
+    std::cerr << "GT  samples: " << tgt.size() << std::endl;
 
     // Cálculo del índice starting_frame_
     double t0_cam = tcam.front();
