@@ -72,10 +72,10 @@ make
 Before running, download the **EuRoC dataset** (e.g., MH_02_easy) and place it under `data/`.
 
 ```bash
-./vi_init
+./vi_init /dev/src/Vi-init-cpp/data/MH_02_easy
 ```
 
-The output will be printed in the terminal and stored in `results/results_<sequence_name>.csv`, including:
+The output will be printed in the terminal and stored in `results/results_MH_02_easy.csv`, including:
 
 - Frame index
 - Error of the closed-form gyroscope bias
