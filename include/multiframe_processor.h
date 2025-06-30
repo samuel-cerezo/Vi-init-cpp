@@ -5,6 +5,21 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include "PointTrack.h"
+
+void prepare_martinelli_inputs(
+    const std::vector<PointTrack>& tracks,
+    const std::vector<double>& tcam,
+    const std::vector<double>& timu,
+    const std::vector<Eigen::Vector3d>& acc,
+    const std::vector<Eigen::Vector3d>& omega,
+    double imu_dt,
+    const Eigen::Vector3d& bg,
+    std::vector<std::vector<Eigen::Vector3d>>& acc_segments,
+    std::vector<std::vector<double>>& dts_segments,
+    std::vector<std::vector<Eigen::Matrix3d>>& Rks_segments,
+    std::vector<Eigen::Vector3d>& mu_dirs);
+
 
 void process_multi_frame_segment(int i,
                                  const std::vector<std::string>& cam0_image_names,

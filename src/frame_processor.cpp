@@ -14,25 +14,6 @@
 #include <estimate_state_martinelli.h>
 
 
-
-double compute_scale_error(const Eigen::Vector3d& p0_gt,
-                           const Eigen::Vector3d& p1_gt,
-                           const Eigen::Vector3d& t_dir,
-                           double scale_estimated)
-{
-    double displacement_gt = (p1_gt - p0_gt).norm();
-    double displacement_est = scale_estimated * t_dir.norm();  
-
-    if (displacement_gt < 1e-6) {
-        std::cerr << "[WARNING] GT displacement too small for scale error evaluation." << std::endl;
-        return -1.0;
-    }
-
-    double error_percent = std::abs(displacement_est - displacement_gt) / displacement_gt * 100.0;
-    return error_percent;  // %
-}
-
-
 // [s1, ..., s4, v_i, ba, g] from A x = b,  with A ∈ ℝ^{12×13} y b ∈ ℝ^{12}
 Eigen::VectorXd estimate_state_martinelli(const Eigen::MatrixXd& A, const Eigen::VectorXd& b) {
     if (A.rows() != b.rows()) {
@@ -124,7 +105,7 @@ void process_frame_pair(int starting_frame,
     //cv::undistortPoints(old_points, old_undist, K_cv, dist_cv, cv::noArray(), K_cv);
     //cv::undistortPoints(new_points, new_undist, K_cv, dist_cv, cv::noArray(), K_cv);
 
-    // Undistort to pixel coordinates using P=K (same as Python)
+    // Undistort to pixel coordinates using P=K 
     cv::Mat old_undist, new_undist, mask;
     cv::undistortPoints(old_points, old_undist, K_cv, dist_cv, cv::noArray(), K_cv);
     cv::undistortPoints(new_points, new_undist, K_cv, dist_cv, cv::noArray(), K_cv);
@@ -155,14 +136,8 @@ void process_frame_pair(int starting_frame,
     old_undist.convertTo(old_undist, CV_64F);
     new_undist.convertTo(new_undist, CV_64F);
 
-
     cv::theRNG().state = 42;
-
-    //mask = cv::Mat::ones(old_undist.rows, 1, CV_8U);
-
-
     // Estimate Essential matrix to get inliers
-    //cv::findEssentialMat(old_undist, new_undist, K_cv, cv::RANSAC, 0.999, 2.0, mask);
     cv::Mat E = cv::findEssentialMat(old_undist, new_undist, K_cv, cv::RANSAC, 0.999, 1.0, mask);
 
    // debug_essential(old_undist, new_undist, mask);
@@ -291,5 +266,4 @@ void process_frame_pair(int starting_frame,
                     << error_b_gopt << "," << opt_elapsed.count() << ","
                     << error_b_g_constVel << "," << constVel_elapsed.count()
                     <<"\n";
-
 }

@@ -64,23 +64,20 @@ int main(int argc, char** argv) {
     log_bias_file << "frame, error_small, elapsed_small_us, error_opt, elapsed_opt_us, error_constVel, elapsed_consVel_us\n";
 
 
-    // Frame-by-frame processing --> bg estimation
-    for (int frame = starting_frame_; frame < cam0_image_names.size() - 1; frame += 10) {
     //for (int frame = starting_frame_; frame < 30; frame += 5) {
+    
+    // Frame-by-frame processing --> bg estimation and comparison. The result is saved in a CSV format, in results folder.
+    for (int frame = starting_frame_; frame < cam0_image_names.size() - 1; frame += 10) {
         process_frame_pair(frame, cam0_image_names, tcam, timu, omega, acc, 4999936e-9,
                            tgt, qgt, bg_gt, ba_gt, v_gt, g_gt, p_gt, K, K_cv, dist_cv, tbodycam, tbodyimu, log_bias_file);
     }
-
-
-    // multiframe processing
-    //for (int frame = starting_frame_; frame < cam0_image_names.size() - 5; frame += 10) {
-    //for (int frame = starting_frame_; frame <= starting_frame_ + 10; frame += 10) {
-    //    process_multi_frame_segment(frame, cam0_image_names, tcam, timu, omega, acc,
-    //                                4999936e-9, tgt, qgt, bg_gt, ba_gt, v_gt, g_gt, p_gt,
-    //                                K, K_cv, dist_cv, tbodycam, tbodyimu, log_bias_file);
-    //}
-
-
+    
 
     return 0;
 }
+
+
+
+// example of use:
+
+//          ./vi_init /Users/samucerezo/dev/src/Vi-init-cpp/data/MH_01

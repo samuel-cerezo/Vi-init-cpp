@@ -5,6 +5,7 @@
 #include <iostream>
 #include <numeric>
 
+
 MartinelliEstimate estimate_state_martinelli_multi(
     const std::vector<std::vector<Eigen::Matrix3d>>& Rks_all,
     const std::vector<std::vector<Eigen::Vector3d>>& accs_all,
@@ -65,12 +66,14 @@ MartinelliEstimate estimate_state_martinelli_multi(
         b.segment<3>(row_base) = b_term;
 
         // === DEBUGGING ===
+        /*
         std::cout << "\n[Pair " << pair_idx << "]" << std::endl;
         std::cout << "s_ij dir: " << t_dir.transpose() << std::endl;
         std::cout << "v_i coeff: " << delta_T << std::endl;
         std::cout << "ba coeff:\n" << -A_ba << std::endl;
         std::cout << "g coeff (scalar): " << g_coeff_scalar << std::endl;
         std::cout << "RHS b[" << pair_idx << "]: " << b_term.transpose() << std::endl;
+        */
     }
 
     // Resolver el sistema
@@ -82,13 +85,15 @@ MartinelliEstimate estimate_state_martinelli_multi(
     const auto& singular_vals = svd.singularValues();
 
 
+    
     std::cout << "\n=== Condicionamiento del sistema ===" << std::endl;
-    std::cout << "Valores singulares: " << singular_vals.transpose() << std::endl;
+    //std::cout << "Valores singulares: " << singular_vals.transpose() << std::endl;
     std::cout << "Rango numérico: " << rank << " / " << A.cols() << std::endl;
     std::cout << "¿Sistema bien condicionado? "
             << (rank == A.cols() ? "Sí ✅" : "No ⚠️") << std::endl;
 
-    // Recuperar solución
+    
+
     std::vector<double> scales;
     for (int i = 0; i < num_pairs; ++i)
         scales.push_back(x(i));
