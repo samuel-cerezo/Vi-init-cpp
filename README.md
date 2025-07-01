@@ -1,12 +1,11 @@
 # 📌 VI Initialization using Small-Angle Approximation
 
-This repository provides a lightweight and modular C++ implementation of a **fully closed-form visual-inertial initialization algorithm**, based on the small rotation approximation.
+This repository provides a C++ implementation of a **fully closed-form visual-inertial initialization algorithm**, based on the small rotation approximation.
 
 ## ✨ Features
 
 - Closed-form gyroscope bias estimation from two-view visual correspondences and IMU preintegration
 - Linear estimation gyroscope bias
-- Optional refinement via nonlinear optimization (Ceres Solver)
 - Real-time performance
 - Modular, testable architecture with full support for EuRoC dataset
 
@@ -45,7 +44,8 @@ ViInitCpp/
 │   └── bg_optimization.cpp
 ├── data/
 │   └── MH_02_easy/   # EuRoC dataset (you must download separately)
-├── results.csv       # Output file with per-frame errors and timings
+├── results/
+│   └── results_MH_02_easy.csv/   # File created after running
 ```
 
 ## ⚙️ Build Instructions
@@ -62,7 +62,7 @@ mkdir build && cd build
 cmake ..
 
 # Build
-make -j
+make
 ```
 
 > 🧠 Tip: You may need to set OpenCV, Python and yaml-cpp paths manually in `CMakeLists.txt` if using Apple Silicon or custom installations.
@@ -72,14 +72,15 @@ make -j
 Before running, download the **EuRoC dataset** (e.g., MH_02_easy) and place it under `data/`.
 
 ```bash
-./vi_init
+./vi_init /dev/src/Vi-init-cpp/data/MH_02_easy
 ```
 
-The output will be printed in the terminal and stored in `results.csv`, including:
+The output will be printed in the terminal and stored in `results/results_MH_02_easy.csv`, including:
 
 - Frame index
 - Error of the closed-form gyroscope bias
 - Error using nonlinear Optimization
+- Error using constant velocity approximation
 - Computation cost (microseconds)
 
 
