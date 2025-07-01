@@ -103,7 +103,7 @@ static bool load_csv_gt(const std::string& filename,
             velocities.emplace_back(row[8], row[9], row[10]);
             biases_g.emplace_back(row[11], row[12], row[13]);
             biases_a.emplace_back(row[14], row[15], row[16]);
-            gravities.emplace_back(0.0, 0.0, -9.81); // fijo por defecto
+            gravities.emplace_back(0.0, 0.0, -9.81);
         }
     }
     return true;

@@ -3,7 +3,7 @@
 #include <Eigen/Dense>
 #include <iostream>
 #include <vector>
-#include <pybind11/eigen.h>  // <== NECESARIO para usar Eigen::MatrixXd con pybind11
+#include <pybind11/eigen.h> 
 #include "c2p_wrapper.h"
 
 namespace py = pybind11;
@@ -75,19 +75,10 @@ C2PResult run_c2p(const std::vector<Eigen::Vector3d>& f0_inliers,
     py::array_t<double> f1_np = py::cast(f1_mat);
 
     try {
-        //std::cout << "[Frame " << frame_idx << "] Ejecutando c2p_ con " << N << " puntos" << std::endl; 
-        //std::cout << "[Frame " << frame_idx << "] f0_mat: " << f0_mat.rows() << "x" << f0_mat.cols() << std::endl;
-        //std::cout << "[Frame " << frame_idx << "] f1_mat: " << f1_mat.rows() << "x" << f1_mat.cols() << std::endl;
-
-        auto f0_shape = f0_np.shape();
-        //std::cout << "[Frame " << frame_idx << "] f0_np shape: " << f0_shape[0] << " x " << f0_shape[1] << std::endl;
-
-        auto f1_shape = f1_np.shape();
-        //std::cout << "[Frame " << frame_idx << "] f1_np shape: " << f1_shape[0] << " x " << f1_shape[1] << std::endl;
-
-        auto result_obj = wrapper.attr("c2p_")(f0_np, f1_np);
         
-        //std::cout << "[Frame " << frame_idx << "] c2p_ ejecutado correctamente" << std::endl; 
+        auto f0_shape = f0_np.shape();
+        auto f1_shape = f1_np.shape();
+        auto result_obj = wrapper.attr("c2p_")(f0_np, f1_np);
 
         if (!py::isinstance<py::tuple>(result_obj)) {
             throw std::runtime_error("Expected a tuple return from c2p_");

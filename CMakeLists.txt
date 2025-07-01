@@ -43,8 +43,9 @@ add_executable(vi_init
     src/camera_utils.cpp
     src/feature_tracking.cpp
     src/frame_processor.cpp
-    src/multiframe_processor.cpp
-    src/estimate_state_martinelli.cpp
+    src/feature_tracker.cpp
+    src/track_manager.cpp
+    src/visualize_tracking.cpp
 )
 
 target_link_libraries(vi_init

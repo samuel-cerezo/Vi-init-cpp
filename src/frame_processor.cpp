@@ -11,35 +11,6 @@
 #include <iostream>
 #include <Eigen/Dense>
 #include <vector>
-#include <estimate_state_martinelli.h>
-
-
-// [s1, ..., s4, v_i, ba, g] from A x = b,  with A ∈ ℝ^{12×13} y b ∈ ℝ^{12}
-Eigen::VectorXd estimate_state_martinelli(const Eigen::MatrixXd& A, const Eigen::VectorXd& b) {
-    if (A.rows() != b.rows()) {
-        throw std::runtime_error("[ERROR] inconsistent dimensions between A and b.");
-    }
-
-    // SVD: x = V * S^-1 * U^T * b
-    Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeThinU | Eigen::ComputeThinV);
-    Eigen::VectorXd x = svd.solve(b);
-
-    return x; // x is: [s1, s2, s3, s4, v_i (3), ba (3), g (3)]
-}
-
-
-
-void debug_essential(const cv::Mat& old_undist, const cv::Mat& new_undist, const cv::Mat& mask) {
-    std::cout << "=== DEBUG EssentialMat (C++) ===" << std::endl;
-    std::cout << "old_undist: " << old_undist.rows << "x" << old_undist.cols 
-              << ", type = " << old_undist.type() << std::endl;
-    std::cout << "new_undist: " << new_undist.rows << "x" << new_undist.cols 
-              << ", type = " << new_undist.type() << std::endl;
-    std::cout << "mask: " << mask.rows << "x" << mask.cols 
-              << ", type = " << mask.type() << std::endl;
-    int inliers = cv::countNonZero(mask);
-    std::cout << "Inliers count: " << inliers << std::endl;
-}
 
 
 void evaluate_rotation_error(const std::vector<Eigen::Vector3d>& omega_all_vec,
