@@ -36,6 +36,14 @@ Eigen::Vector3d bg_small_angle(
     const Eigen::Matrix4d& tbodycam,
     const Eigen::Matrix4d& tbodyimu);
 
+Eigen::Vector3d bg_small_angle2(
+    const std::vector<Eigen::Vector3d>& omega_all,
+    double deltat,
+    const Eigen::Matrix3d& Rpreint,
+    const Eigen::Matrix3d& Rij,
+    const Eigen::Matrix4d& tbodycam,
+    const Eigen::Matrix4d& tbodyimu);
+
 Eigen::Vector3d bg_constVel(
     const std::vector<Eigen::Vector3d>& omega_all,
     double deltat,

@@ -1,7 +1,5 @@
 // main.cpp (modular version)
 
-#include "track_manager.h"
-#include "feature_tracker.h"
 #include "camera_utils.h"
 #include "feature_tracking.h"
 #include "frame_processor.h"
@@ -13,9 +11,6 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-
-FeatureTracker tracker;
-TrackManager track_manager;
 
 namespace py = pybind11;
 
@@ -64,41 +59,18 @@ int main(int argc, char** argv) {
     std::string dataset_name = dataset_path.filename().string();  // e.g., "MH_02"
     std::string output_filename = results_dir / ("results_" + dataset_name + ".csv");
     std::ofstream log_bias_file(output_filename, std::ios::out);
-    log_bias_file << "frame, error_small, elapsed_small_us, error_opt, elapsed_opt_us, error_constVel, elapsed_consVel_us\n";
+    log_bias_file << "frame,error_small,elapsed_small_us,error_wo_preint,elapsed_wo_preint_us,error_opt,elapsed_opt_us,error_constVel,elapsed_consVel_us,optim_iterations\n";
 
 
+    //for (int frame = starting_frame_; frame < 30; frame += 5) {
     
     // Frame-by-frame processing --> bg estimation and comparison. The result is saved in a CSV format, in results folder.
-    for (int frame = starting_frame_; frame < 30; frame += 5) {
-    //for (int frame = starting_frame_; frame < cam0_image_names.size() - 1; frame += 10) {
+    //for (int frame = starting_frame_; frame < 40; frame += 5) {
+    for (int frame = starting_frame_; frame < cam0_image_names.size() - 1; frame += 10) {
         process_frame_pair(frame, cam0_image_names, tcam, timu, omega, acc, 4999936e-9,
                            tgt, qgt, bg_gt, ba_gt, v_gt, g_gt, p_gt, K, K_cv, dist_cv, tbodycam, tbodyimu, log_bias_file);
     }
     
-    std::cout << "Processing features in multiple images..." << std::endl;
-    for (int i = 0; i < cam0_image_names.size(); ++i) {
-        cv::Mat image = cv::imread(cam0_image_names[i], cv::IMREAD_GRAYSCALE);
-        tracker.processFrame(image, i, track_manager);
-    }
-
-    auto valid_tracks = track_manager.getTracksWithMinObservations(3);
-
-    
-    std::cout << "\n=== Tracking summary ===" << std::endl;
-    std::cout << "Total tracks: " << track_manager.tracks.size() << std::endl;
-
-    int n3 = 0, n4 = 0, n5 = 0;
-    for (const auto& kv : track_manager.tracks) {
-        const auto& tr = kv.second;
-        if (tr.observations.size() >= 3) ++n3;
-        if (tr.observations.size() >= 4) ++n4;
-        if (tr.observations.size() >= 5) ++n5;
-    }
-    std::cout << "Tracks with ≥ 3 views: " << n3 << std::endl;
-    std::cout << "Tracks with ≥ 4 views: " << n4 << std::endl;
-    std::cout << "Tracks with ≥ 5 views: " << n5 << std::endl;
-
-
     return 0;
 }
 

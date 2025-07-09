@@ -11,7 +11,7 @@
 #include <iostream>
 #include <Eigen/Dense>
 #include <vector>
-
+#include <random>
 
 void evaluate_rotation_error(const std::vector<Eigen::Vector3d>& omega_all_vec,
                               double deltat,
@@ -174,28 +174,75 @@ void process_frame_pair(int starting_frame,
     omega_segment.resize(omega_segment.size() - 1);
 
     Eigen::Matrix3d Rpreint = Eigen::Matrix3d::Identity();
+    auto t_Rprint_start = std::chrono::high_resolution_clock::now();
     std::vector<Eigen::Vector3d> omega_all;
     for (size_t j = 0; j < omega_segment.size(); ++j) {
         Eigen::Vector3d dtheta = omega_segment[j] * dts[j];
         Rpreint *= lie::ExpMap(dtheta);
         omega_all.push_back(omega_segment[j]);
     }
-    
+    auto t_Rprint_end = std::chrono::high_resolution_clock::now();
+
     Eigen::Matrix3d R_imu = tbodyimu.block<3, 3>(0, 0);
     Eigen::Matrix3d R_cam = tbodycam.block<3, 3>(0, 0);
     //std::cout << "R_cam:\n" << R_cam << std::endl;
     //std::cout << "R_imu:\n" << R_imu << std::endl;
 
+    // const vel bias estimation
 
+    // Compare with ground truth
+    auto it_gt = std::min_element(tgt.begin(), tgt.end(), [t1](double a, double b) {
+        return std::abs(a - t1) < std::abs(b - t1);
+    });
+    size_t idx_gt1 = std::distance(tgt.begin(), it_gt);
+    Eigen::Vector3d bg_gt_ = bg_gt[idx_gt1];
+
+    Eigen::Matrix3d Rpreint_gt = Eigen::Matrix3d::Identity();
+    for (size_t j = 0; j < omega_segment.size(); ++j) {
+        Eigen::Vector3d dtheta_gt = (omega_segment[j] - bg_gt_) * dts[j];
+        Rpreint_gt *= lie::ExpMap(dtheta_gt);
+    }
+
+    auto it_gt_1= std::min_element(tgt.begin(), tgt.end(), [t1](double a, double b) {
+        return std::abs(a - t1) < std::abs(b - t1);
+    });
+    size_t idx_1_ = std::distance(tgt.begin(), it_gt_1);
+    
+    auto it_gt_2= std::min_element(tgt.begin(), tgt.end(), [t2](double a, double b) {
+        return std::abs(a - t2) < std::abs(b - t2);
+    });
+    size_t idx_2_ = std::distance(tgt.begin(), it_gt_2);
+
+    Eigen::Matrix3d Ri_gt_ = qgt[idx_1_].toRotationMatrix();
+    Eigen::Matrix3d Rj_gt_ = qgt[idx_2_].toRotationMatrix();
+    Eigen::Matrix3d Rij_gt_ = Ri_gt_.transpose()*Rj_gt_;
+    Eigen::Matrix3d Rji_gt_ = Rij_gt_.transpose();
+
+    double sigmarij = 0.001;
+    std::default_random_engine generator;
+    std::normal_distribution<double> dist(0.0, sigmarij);
+
+    Eigen::Vector3d rijnoise;
+    for (int i = 0; i < 3; ++i) {
+        rijnoise[i] = dist(generator);
+    }
+    Eigen::Matrix3d Rij_noisy = Rpreint_gt * lie::ExpMap(rijnoise);
+
+    //std::cout << "\n.... idx1->idx2: " << idx_1_ << "-->" << idx_2_ << std::endl;
+    //std::cout << "\n R01: " << R01 << "\n----\n Rij_gt: " << Rij_gt_ << std::endl;
+    //std::cout << "\n----\n Rij_gt_2: " << Rpreint_gt << std::endl;
     //----------------------- bias estimation ----------------------------
     // Small angle bias estimation
     auto t_small_start = std::chrono::high_resolution_clock::now();
-    Eigen::Vector3d b_g = bg_small_angle(omega_all, deltat, Rpreint, R01, tbodycam, tbodyimu);
+    Eigen::Vector3d b_g = bg_small_angle(omega_all, deltat, Rpreint, Rij_noisy, tbodycam, tbodyimu);
     auto t_small_end = std::chrono::high_resolution_clock::now();
 
-    // const vel bias estimation
+    auto t_small2_start = std::chrono::high_resolution_clock::now();
+    Eigen::Vector3d b_g2 = bg_small_angle2(omega_all, deltat, Rpreint, Rij_noisy, tbodycam, tbodyimu);
+    auto t_small2_end = std::chrono::high_resolution_clock::now();
+
     auto t_constVel_start = std::chrono::high_resolution_clock::now();
-    Eigen::Vector3d b_g_constVel = bg_constVel(omega_all, deltat, Rpreint, R01, tbodycam, tbodyimu);
+    Eigen::Vector3d b_g_constVel = bg_constVel(omega_all, deltat, Rpreint, Rij_noisy, tbodycam, tbodyimu);
     auto t_constVel_end = std::chrono::high_resolution_clock::now();
 
     // Optimization-based estimation
@@ -205,27 +252,27 @@ void process_frame_pair(int starting_frame,
 
     Eigen::Vector3d b_g_init = Eigen::Vector3d::Zero();
     auto t_opt_start = std::chrono::high_resolution_clock::now();
-    auto [bgopt, cost, summary] = bg_optimization(omega_all, deltat, R01, b_g_init, tbodycam, tbodyimu);
+    auto [bgopt, cost, summary] = bg_optimization(omega_all, deltat, Rij_noisy, b_g, tbodycam, tbodyimu);
     auto t_opt_end = std::chrono::high_resolution_clock::now();
-
-    // Compare with ground truth
-    auto it_gt = std::min_element(tgt.begin(), tgt.end(), [t1](double a, double b) {
-        return std::abs(a - t1) < std::abs(b - t1);
-    });
-    size_t idx_gt1 = std::distance(tgt.begin(), it_gt);
-    Eigen::Vector3d bg_gt_ = bg_gt[idx_gt1];
+    //::cout << "Iteraciones realizadas: " << summary.iterations.size() << std::endl;
 
     double error_b_g = (bg_gt_ - b_g).norm();
+    double error_b_g2 = (bg_gt_ - b_g2).norm();
     double error_b_gopt = (bg_gt_ - bgopt).norm();
     double error_b_g_constVel = (bg_gt_ - b_g_constVel).norm();
 
-    std::chrono::duration<double, std::micro> small_elapsed = t_small_end - t_small_start;
+    std::chrono::duration<double, std::micro> Rprint_elapsed = t_Rprint_end - t_Rprint_start;
+    std::chrono::duration<double, std::micro> small_elapsed = Rprint_elapsed + (t_small_end - t_small_start);
+    std::chrono::duration<double, std::micro> small2_elapsed = t_small2_end - t_small2_start;
     std::chrono::duration<double, std::micro> opt_elapsed = t_opt_end - t_opt_start;
     std::chrono::duration<double, std::micro> constVel_elapsed = t_constVel_end - t_constVel_start;
 
-    std::cout   << "[Frame " << starting_frame 
-                << "] --> small: " << error_b_g 
+    std::cout << "\nRprint_elapsed: " << Rprint_elapsed.count() << std::endl;
+    std::cout   << "[" << starting_frame 
+                << "]-> small: " << error_b_g 
                 << " t:" << small_elapsed.count() << "µs /"
+                << "wo preint: " << error_b_g2
+                << " t:" << small2_elapsed.count() << "µs /"
                 << "constVel:" << error_b_g_constVel
                 << "t:" << constVel_elapsed.count() << "µs /"
                 << "opt: " << error_b_gopt 
@@ -234,7 +281,8 @@ void process_frame_pair(int starting_frame,
     log_bias_file   << starting_frame << ","
                     << std::fixed << std::setprecision(9) 
                     << error_b_g << "," << small_elapsed.count() << ","
+                    << error_b_g2 << "," << small2_elapsed.count() << ","
                     << error_b_gopt << "," << opt_elapsed.count() << ","
-                    << error_b_g_constVel << "," << constVel_elapsed.count()
-                    <<"\n";
+                    << error_b_g_constVel << "," << constVel_elapsed.count() << ","
+                    << summary.iterations.size() << "\n";
 }

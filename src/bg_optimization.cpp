@@ -36,8 +36,10 @@ struct IMURotationResidual {
 
         // Compose integrated and measured rotation in the same reference frame
         Mat3T R_integrated_T = R_imu_T * Rpreint * R_imu_T.transpose();
-        Mat3T R_measured_T = R_cam_T * Rij_T * R_cam_T.transpose();
-        Mat3T R_error = R_integrated_T.transpose() * R_cam_T * Rij_T * R_cam_T.transpose();
+        //Mat3T R_measured_T = R_cam_T * Rij_T * R_cam_T.transpose();
+        Mat3T R_measured_T = Rij_T;
+
+        Mat3T R_error = R_integrated_T.transpose() * R_measured_T;
         
         Vec3T res = lie::LogMapTemplated(R_error);
 
@@ -82,10 +84,10 @@ bg_optimization (const std::vector<Eigen::Vector3d>& omega_all_vec,
     problem.AddResidualBlock(cost_function, nullptr, bg.data());
 
     ceres::Solver::Options options;
-    options.max_num_iterations = 10000;
-    options.function_tolerance = 1e-16;
-    options.gradient_tolerance = 1e-16;
-    options.parameter_tolerance = 1e-16;
+    options.max_num_iterations = 1e6;
+    options.function_tolerance = 1e-10;
+    options.gradient_tolerance = 1e-10;  
+    options.parameter_tolerance = 1e-10; 
     options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
     options.minimizer_progress_to_stdout = false;
 

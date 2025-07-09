@@ -30,8 +30,10 @@ Eigen::Vector3d bg_small_angle(
 
     // Compose integrated and measured rotation in the same reference frame
     Eigen::Matrix3d R_integrated = R_imu * Rpreint * R_imu.transpose();
-    Eigen::Matrix3d R_measured = R_cam * R_ij * R_cam.transpose();
-    Eigen::Matrix3d R_error = R_integrated.transpose() * R_cam * R_ij * R_cam.transpose();
+    //Eigen::Matrix3d R_measured = R_cam * R_ij * R_cam.transpose();
+    Eigen::Matrix3d R_measured = R_ij;
+    
+    Eigen::Matrix3d R_error = R_integrated.transpose() * R_measured;
     Eigen::Vector3d log_rot = lie::LogMap(R_error);
     
     //std::cout << "[DEBUG] Rij:\n" << R_ij << std::endl;
@@ -41,6 +43,44 @@ Eigen::Vector3d bg_small_angle(
     return b_g;
 }
 
+
+
+Eigen::Vector3d bg_small_angle2(
+    const std::vector<Eigen::Vector3d>& omega_all,
+    double deltat,
+    const Eigen::Matrix3d& Rpreint,
+    const Eigen::Matrix3d& R_ij,
+    const Eigen::Matrix4d& T_body_cam,
+    const Eigen::Matrix4d& T_body_imu)
+{
+    // Extract 3x3 rotation matrices from extrinsics
+    Eigen::Matrix3d R_imu = T_body_imu.topLeftCorner<3, 3>();
+    Eigen::Matrix3d R_cam = T_body_cam.topLeftCorner<3, 3>();
+    const int n = static_cast<int>(omega_all.size());
+
+    // Compose integrated and measured rotation in the same reference frame
+    Eigen::Matrix3d R_integrated = R_imu * Rpreint * R_imu.transpose();
+    //Eigen::Matrix3d R_measured = R_cam * R_ij * R_cam.transpose();
+    Eigen::Matrix3d R_measured = R_ij;
+
+    // omega mean calculation
+    Eigen::Vector3d omega_sum = Eigen::Vector3d::Zero();
+    for (const auto& omega : omega_all) {
+        omega_sum += omega;
+    }
+    Eigen::Vector3d omega_mean = omega_sum / omega_all.size();
+
+    Eigen::Matrix3d R_error = lie::ExpMap(n * deltat * omega_mean);
+    Eigen::Vector3d log_rot = lie::LogMap(R_error.transpose()*R_measured);
+
+    Eigen::Vector3d b_g = - (1.0 / (n * deltat)) * (log_rot);
+
+    return b_g;
+
+}
+
+
+
 Eigen::Vector3d bg_constVel(
     const std::vector<Eigen::Vector3d>& omega_all,
     double deltat,
@@ -49,7 +89,6 @@ Eigen::Vector3d bg_constVel(
     const Eigen::Matrix4d& T_body_cam,
     const Eigen::Matrix4d& T_body_imu)
 {
-
     // Extract 3x3 rotation matrices from extrinsics
     Eigen::Matrix3d R_imu = T_body_imu.topLeftCorner<3, 3>();
     Eigen::Matrix3d R_cam = T_body_cam.topLeftCorner<3, 3>();
@@ -60,11 +99,16 @@ Eigen::Vector3d bg_constVel(
     Eigen::Vector3d average_omega = (1.0 / (n * deltat)) * (log_rot);
     Eigen::Matrix3d R_omega = lie::ExpMap(average_omega*deltat);
     Eigen::Matrix3d R_omega_world = R_imu * R_omega * R_imu.transpose();
-    Eigen::Matrix3d R_measured = R_cam * R_ij * R_cam.transpose();
+    //Eigen::Matrix3d R_measured = R_cam * R_ij * R_cam.transpose();
+    Eigen::Matrix3d R_measured = R_ij;
     Eigen::Vector3d logRij = (lie::LogMap(R_measured)) / n;
     Eigen::Matrix3d R_log = lie::ExpMap(logRij);
 
     Eigen::Vector3d b_g_constVel = -(1.0 / deltat) * lie::LogMap(R_omega_world.transpose()*R_log);
 
     return b_g_constVel;
+
+
+
+    
 }
