@@ -21,4 +21,21 @@ struct PointTrack {
     size_t numObservations() const {
         return observations.size();
     }
+
+    // Verifica si el punto fue observado en un frame específico
+    bool hasObservation(int frame_idx) const {
+        for (const auto& obs : observations) {
+            if (obs.frame_idx == frame_idx) return true;
+        }
+        return false;
+    }
+
+    // Devuelve la observación en un frame específico (si existe)
+    std::optional<Eigen::Vector2d> getObservation(int frame_idx) const {
+        for (const auto& obs : observations) {
+            if (obs.frame_idx == frame_idx) return obs.uv;
+        }
+        return std::nullopt;  // no encontrada
+    }
+    
 };

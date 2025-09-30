@@ -46,6 +46,7 @@ add_executable(vi_init
     src/feature_tracker.cpp
     src/track_manager.cpp
     src/visualize_tracking.cpp
+    src/utils.cpp
 )
 
 target_link_libraries(vi_init

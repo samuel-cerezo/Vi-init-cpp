@@ -11,6 +11,7 @@ class TrackManager {
 public:
     // Mapa de id de track a sus observaciones
     std::map<int, PointTrack> tracks;
+    
 
     // Agrega una observación a un track existente
     void addObservation(int track_id, int frame_idx, const Eigen::Vector2d& uv);
@@ -18,8 +19,9 @@ public:
     // Crea un nuevo track
     int createTrack(int frame_idx, const Eigen::Vector2d& uv);
 
-    // Obtiene tracks con al menos ni observaciones
+    // Obtiene tracks con al menos n observaciones
     std::vector<PointTrack> getTracksWithMinObservations(int min_views) const;
+
 
 private:
     int next_id = 0;

@@ -49,7 +49,6 @@ Eigen::Vector3d bg_constVel(
     const Eigen::Matrix4d& T_body_cam,
     const Eigen::Matrix4d& T_body_imu)
 {
-
     // Extract 3x3 rotation matrices from extrinsics
     Eigen::Matrix3d R_imu = T_body_imu.topLeftCorner<3, 3>();
     Eigen::Matrix3d R_cam = T_body_cam.topLeftCorner<3, 3>();
