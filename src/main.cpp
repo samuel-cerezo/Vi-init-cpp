@@ -325,10 +325,15 @@ int main(int argc, char** argv) {
 
     int ref_frame_idx = 108;    //108
 
-    double first_threshold = 45.0;
+    double first_threshold = 45.0;  //45
+    double first_threshold_rel = 0.7;  
+    // capaz se podi
     int id_threshold = 0;
 
     std::cout << "\nDetectando traslacion..." << std::endl;
+
+    double parallax_media_px, parallax_anterior;
+
     for (size_t idx_trigg = 0; idx_trigg  <= 20 ; ++idx_trigg){
         id_threshold = idx_trigg;
         int actual_frame = idx_trigg + ref_frame_idx;
@@ -351,10 +356,9 @@ int main(int argc, char** argv) {
         }
         
         const Eigen::Matrix3d& R_k_k1 = *R_k_k1_opt;    //reference to the value
-        double parallax_media_px = 0.0;
         
-        auto t0 = Clock::now();
-
+       auto t0 = Clock::now();
+        double parallax_anterior = parallax_media_px;
         bool criteria_achieved = compute_translation_parallax_score(image_1, image_2, K, R_k_k1, parallax_media_px);
         auto t1 = Clock::now();
         double time_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -362,11 +366,16 @@ int main(int argc, char** argv) {
 
         //std::cout << "[frame " << actual_frame << "->" << actual_frame+1
         //          << "] parallax_media_px = " << parallax_media_px << " px. Time: "<< time_ms <<" ms.\n";
+        
+        double parallax_rel = 0.0;
+        if (parallax_anterior != 0.0) {
+            parallax_rel = std::abs(parallax_media_px - parallax_anterior) / parallax_anterior;
+        }
         std::cout << parallax_media_px << std::endl;   //average of 7ms
         //std::cout << time_ms << std::endl; 
 
-        if (parallax_media_px >= first_threshold) {
-           
+        //if (parallax_media_px >= first_threshold) {
+        if((parallax_rel >= first_threshold_rel) && (idx_trigg > 1)){
             std::cout << "\n -- Criterio alcanzado en " << idx_trigg << " frames." << std::endl;
             break; // the criteria is achieved
         }
@@ -402,6 +411,13 @@ int main(int argc, char** argv) {
     Eigen::Vector3d Ba_gt = ba_gt[gt_starting_frame_];
     Eigen::Matrix3d R0_gt = quatToRot(qgt[gt_starting_frame_]);
     
+    std::map<int, double> historico_rmseG, historico_rmseBA, historico_rmseV;
+    historico_rmseG[id_threshold-1] = 999;
+    historico_rmseBA[id_threshold-1] = 999;
+    historico_rmseV[id_threshold-1] = 999;
+    historico_rmseG[id_threshold] = 999;
+    historico_rmseBA[id_threshold] = 999;
+    historico_rmseV[id_threshold] = 999;    
     for (size_t n_frames=id_threshold; n_frames <= MAX_FRAMES; ++n_frames){
 
         /////// bias estimation //////////
@@ -632,9 +648,11 @@ int main(int argc, char** argv) {
         double gravity_mag = 9.81; // o el valor que uses para la gravedad
 
         if (solveVINSWithBias(Gamma_j_map, S_j_map, mu_ij_map, t_vals, gravity_mag, sol)) {
+            std::cout << "------- Results with " << n_frames << " frames -------" << std::endl;
             Eigen::Vector3d gravity_w = R0_gt*sol.gravity;
-            std::cout << "Gravedad [f0]: " << sol.gravity.transpose() << std::endl;
-            std::cout << "Gravedad [w]: " << gravity_w.transpose() << std::endl;
+            //Eigen::Vector3d velocity_w = R0_gt*sol.velocity;  //da mayor
+            //std::cout << "Gravedad [f0]: " << sol.gravity.transpose() << std::endl;
+            std::cout << "Gravedad: " << gravity_w.transpose() << std::endl;    //world coordinates
             std::cout << "Velocidad inicial: " << sol.velocity.transpose() << std::endl;
             std::cout << "ba estimado: " << sol.bias.transpose() << std::endl;
             // Puedes recorrer sol.lambdas para obtener las escalas λ_i_j de cada característica
@@ -651,11 +669,24 @@ int main(int argc, char** argv) {
             double rmse_velocity = rmse(sol.velocity, V0_gt);
             double rmse_bias_a     = rmse(sol.bias, Ba_gt);
             double rmse_bias_g     = rmse(bg_est, Bg_gt);
+                std::cout << "RMSE gravedad: " << rmse_gravity << " deg" << std::endl;
+                std::cout << "RMSE velocidad: " << rmse_velocity << " m/s"   << std::endl;
+                std::cout << "RMSE bias acc: " << rmse_bias_a     << " m/s^2" << std::endl;
+                std::cout << "RMSE bias gyr: " << rmse_bias_g     << " rad/s" << std::endl;
+            ///// corroboramos que los errores siempre bajen
+            historico_rmseG[n_frames] = rmse_gravity;
+            historico_rmseBA[n_frames] = rmse_bias_a;
+            historico_rmseV[n_frames] = rmse_velocity;
 
-            std::cout << "RMSE gravedad: " << rmse_gravity << " deg" << std::endl;
-            std::cout << "RMSE velocidad: " << rmse_velocity << " m/s"   << std::endl;
-            std::cout << "RMSE bias acc: " << rmse_bias_a     << " m/s^2" << std::endl;
-            std::cout << "RMSE bias gyr: " << rmse_bias_g     << " rad/s" << std::endl;
+            if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0  || (historico_rmseV[n_frames] - historico_rmseV[n_frames-1]) > 0.0 || (historico_rmseBA[n_frames] - historico_rmseBA[n_frames-1]) > 0.0 ){
+                std::cout << "------- Solucion estable alcanzada en (" << n_frames-1 << ") frames -----"  << std::endl;
+                std::cout << "RMSE gravedad: " << historico_rmseG[n_frames-1] << " deg" << std::endl;
+                std::cout << "RMSE velocidad: " << historico_rmseV[n_frames-1] << " m/s"   << std::endl;
+                std::cout << "RMSE bias acc: " << historico_rmseBA[n_frames-1]     << " m/s^2" << std::endl;
+                std::cout << "RMSE bias gyr: " << rmse_bias_g     << " rad/s" << std::endl;
+                break;
+            }
+
 
         } else {
             std::cerr << "[Solver] No se pudo resolver el sistema visual-inercial." << std::endl;
