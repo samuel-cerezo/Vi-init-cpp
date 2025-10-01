@@ -27,7 +27,72 @@
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 #include <cmath>
+#include <sstream>
 
+
+struct InitResult {
+    int ref_idx; 
+    int n_frames;
+    Eigen::Vector3d gravity;   // gravedad
+    Eigen::Vector3d velocity;    // velocity
+    Eigen::Vector3d ba;        // bias acc
+    double rmse_g_deg;
+    double rmse_v_ms;
+    double rmse_ba_ms2;
+    double rmse_bg_rads;
+    std::string status;          // "OK" o "Stable"
+};
+
+class CsvLogger {
+public:
+    explicit CsvLogger(const std::string& path, bool write_header_if_new = true)
+        : path_(path)
+    {
+        const bool file_exists = std::filesystem::exists(path_);
+        ofs_.open(path_, std::ios::out | std::ios::app);
+        if (!ofs_) throw std::runtime_error("No pude abrir CSV: " + path_);
+        if (write_header_if_new && !file_exists) writeHeader();
+        ofs_ << std::fixed << std::setprecision(6);
+    }
+
+    void append(const InitResult& r) {
+        ofs_  << r.ref_idx << ","                 
+              << r.n_frames << ","
+              << r.gravity.x() << "," << r.gravity.y() << "," << r.gravity.z() << ","
+              << r.velocity.x()  << "," << r.velocity.y()  << "," << r.velocity.z()  << ","
+              << r.ba.x()      << "," << r.ba.y()      << "," << r.ba.z()      << ","
+              << r.rmse_g_deg    << ","
+              << r.rmse_v_ms     << ","
+              << r.rmse_ba_ms2   << ","
+              << r.rmse_bg_rads  << ","
+              << r.status
+              << "\n";
+        ofs_.flush();
+    }
+
+private:
+    void writeHeader() {
+        ofs_ << "ref_idx,"         
+             << "n_frames,"
+             << "g_w_x,g_w_y,g_w_z,"
+             << "v_x,v_y,v_z,"
+             << "ba_w_x,ba_w_y,ba_w_z,"
+             << "rmse_g_deg,rmse_v_ms,rmse_ba_ms2,rmse_bg_rads,"
+             << "status\n";
+    }
+
+    std::string path_;
+    std::ofstream ofs_;
+};
+
+inline std::string infer_sequence_name(const std::string& input_path) {
+    namespace fs = std::filesystem;
+    fs::path p(input_path);
+    if (p.filename().empty()) {         // path con barra final
+        p = p.parent_path();
+    }
+    return p.filename().string();
+}
 
 void preprocessAllTracks(
     const std::vector<std::string>& cam0_image_names,
@@ -297,8 +362,55 @@ bool solveVINSWithBias(
 }
 ////////////////////////////////////////////
 
+inline std::string make_csv_basename(const std::string& seq_name, int ref_idx) {
+    auto now = std::chrono::system_clock::now();
+    std::time_t t  = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    std::ostringstream oss;
+    oss << "results_" << seq_name
+        << "_ref" << ref_idx << "_"
+        << (tm.tm_year + 1900)
+        << std::setw(2) << std::setfill('0') << tm.tm_mon + 1
+        << std::setw(2) << std::setfill('0') << tm.tm_mday << "_"
+        << std::setw(2) << std::setfill('0') << tm.tm_hour
+        << std::setw(2) << std::setfill('0') << tm.tm_min
+        << std::setw(2) << std::setfill('0') << tm.tm_sec
+        << ".csv";
+    return oss.str();
+}
 
+inline std::string make_results_path(const std::string& seq_name, int ref_idx) {
+    namespace fs = std::filesystem;
+    fs::path dir = fs::path("results");          // carpeta destino
+    fs::create_directories(dir);                 // idempotente
+    fs::path file = make_csv_basename(seq_name, ref_idx);
+    return (dir / file).string();
+}
 
+inline std::string make_project_results_path(const std::string& seq_input_path,
+                                             const std::string& seq_name,
+                                             int ref_idx)
+{
+    namespace fs = std::filesystem;
+    fs::path seq_path(seq_input_path);
+
+    if (seq_path.filename().empty()) seq_path = seq_path.parent_path();
+
+    fs::path data_dir   = seq_path.parent_path();      // .../data
+    fs::path project_root = data_dir.parent_path();    // .../Vi-init-cpp
+
+    fs::path outdir = project_root / "results";
+    std::error_code ec;
+    fs::create_directories(outdir, ec); // idempotente
+
+    fs::path file = make_csv_basename(seq_name, ref_idx);
+    return (outdir / file).string();
+}
 
 
 
@@ -314,7 +426,6 @@ int main(int argc, char** argv) {
     }
     
     std::string path_to_euroc_data = argv[1];
-
 
     // Dataset containers
     std::vector<double> timu, tcam, tgt;
@@ -340,8 +451,13 @@ int main(int argc, char** argv) {
     auto& distortion_params = calib.distortion_params;
     auto& image_size = calib.image_size;
     cv::Mat K_cv; cv::eigen2cv(K, K_cv);
-    std::cout << "K matrix: " << K << std::endl;
+    //std::cout << "K matrix: " << K << std::endl;
     cv::Mat dist_cv(distortion_params);
+
+    preprocessAllTracks(cam0_image_names, tracker, track_manager);  //preproceso todas las imagenes
+
+
+
 
     /*
     // results folder
@@ -371,456 +487,427 @@ int main(int argc, char** argv) {
 
     //    general parameters
 
-    int ref_frame_idx = 108;    //108
 
-    double first_threshold = 45.0;  //45
-    double first_threshold_rel = 0.7;  
-    // capaz se podi
-    int id_threshold = 0;
+    //for(int ref_frame_idx = 108; ref_frame_idx < 109; ref_frame_idx += 10)
+    //{
 
-    std::cout << "\nDetectando traslacion..." << std::endl;
-
-    double parallax_media_px, parallax_anterior;
-
-    for (size_t idx_trigg = 0; idx_trigg  <= 20 ; ++idx_trigg){
-        id_threshold = idx_trigg;
-        int actual_frame = idx_trigg + ref_frame_idx;
-        const auto& img1_path = cam0_image_names[ref_frame_idx];
-        const auto& img2_path = cam0_image_names[actual_frame + 1];
-
-        cv::Mat image_1 = cv::imread(img1_path, cv::IMREAD_GRAYSCALE);
-        cv::Mat image_2 = cv::imread(img2_path, cv::IMREAD_GRAYSCALE);
-        if (image_1.empty() || image_2.empty()) continue;
-
-        auto R_k_k1_opt = compute_Rij_with_c2p(
-            img1_path,
-            img2_path,
-            K, K_cv, dist_cv);
+        int ref_frame_idx = 508;    //108
         
-        if (!R_k_k1_opt) {
-            std::cout << "[C2P] without solution (few inliers) in " 
-                    << actual_frame << "->" << actual_frame+1 << "\n";
-            continue; // try the following pair
-        }
-        
-        const Eigen::Matrix3d& R_k_k1 = *R_k_k1_opt;    //reference to the value
-        
-       auto t0 = Clock::now();
-        double parallax_anterior = parallax_media_px;
-        bool criteria_achieved = compute_translation_parallax_score(image_1, image_2, K, R_k_k1, parallax_media_px);
-        auto t1 = Clock::now();
-        double time_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        if(!criteria_achieved) continue;
-
-        //std::cout << "[frame " << actual_frame << "->" << actual_frame+1
-        //          << "] parallax_media_px = " << parallax_media_px << " px. Time: "<< time_ms <<" ms.\n";
-        
-        double parallax_rel = 0.0;
-        if (parallax_anterior != 0.0) {
-            parallax_rel = std::abs(parallax_media_px - parallax_anterior) / parallax_anterior;
-        }
-        std::cout << parallax_media_px << std::endl;   //average of 7ms
-        //std::cout << time_ms << std::endl; 
-
-        //if (parallax_media_px >= first_threshold) {
-        if(((parallax_rel >= first_threshold_rel) && (idx_trigg > 1)) || ((parallax_media_px >= first_threshold) && (idx_trigg > 1))){
-            std::cout << "\n -- Criterio alcanzado en " << idx_trigg << " frames." << std::endl;
-            break; // the criteria is achieved
-        }
-
-    }
-
-    ///////////////////////////////////////////////////////////////////////////
-
-    //size_t n_frames = 10;
-    size_t N = 7;  //number of features. 11
-    double ratio_new=0;
-    int MAX_FRAMES = 12;
-    std::map<int, double> deriv_ratio;
-    std::map<int, double> times_deriv;
-    deriv_ratio[1] = 100.0;
-    times_deriv[1] = 0.0;
-    int gt_starting_frame_ = 0;
-
-    // ---------- estimacion de bias ------------
-    
-    auto estimate_bg_once = [&](){
-        int j_bg = ref_frame_idx + 1;
-        double t1_bg = tcam[ref_frame_idx];
-        double t2_bg = tcam[j_bg];
-
-        auto it1 = std::lower_bound(timu.begin(), timu.end(), t1_bg);
-        auto it2 = std::upper_bound(timu.begin(), timu.end(), t2_bg);
-        if (std::distance(it1, it2) < 2) {
-            throw std::runtime_error("Not enough IMU data to estimate bias.");
-        }
-
-        std::vector<double> imu_times_seg(it1, it2);
-        std::vector<Vector3d> omega_seg_bg, acc_seg_bg;
-        {
-            size_t idx1 = std::distance(timu.begin(), it1);
-            size_t idx2 = std::distance(timu.begin(), it2);
-            omega_seg_bg.reserve(idx2-idx1);
-            acc_seg_bg.reserve(idx2-idx1);
-            for (size_t k = idx1; k < idx2; ++k) {
-                omega_seg_bg.push_back(omega[k]);
-                acc_seg_bg.push_back(acc[k]);
-            }
-        }
-
-        acc_seg_bg.pop_back();
-        omega_seg_bg.pop_back();
-
-        std::vector<double> dts_bg; dts_bg.reserve(imu_times_seg.size()-1);
-        for (size_t i = 1; i < imu_times_seg.size(); ++i)
-            dts_bg.push_back(imu_times_seg[i] - imu_times_seg[i - 1]);
-
-        Matrix3d Rpreint_bg = Matrix3d::Identity();
-        for (size_t j = 0; j < omega_seg_bg.size(); ++j)
-            Rpreint_bg *= lie::ExpMap(omega_seg_bg[j] * dts_bg[j]);
-
-        // R_ij de C2P solo i->i+1
-        auto Ropt_bg = compute_Rij_with_c2p(
-            cam0_image_names[ref_frame_idx],
-            cam0_image_names[j_bg],
-            K, K_cv, dist_cv);
-        if (!Ropt_bg) throw std::runtime_error("[Bias Estimation] Could not compute R_ij i->i+1.");
-        Matrix3d R01_bg = *Ropt_bg;
-
-        double deltat_bg = std::accumulate(dts_bg.begin(), dts_bg.end(), 0.0) / double(dts_bg.size());
-        return bg_small_angle(omega_seg_bg, deltat_bg, Rpreint_bg, R01_bg, tbodycam, tbodyimu);
-    };
-
-    Vector3d bg_est; 
-    try { bg_est = estimate_bg_once(); }
-    catch (const std::exception& e) { std::cerr << e.what() << std::endl; return -1; }
-    std::cout << "[DEBUG] bg_estimation: " << bg_est.transpose() << std::endl;
-
-    // -----------------------------------------
+        std::string seq_name = infer_sequence_name(argv[1]);
+        CsvLogger logger(make_project_results_path(argv[1], seq_name, ref_frame_idx));
 
 
+        std::cout << "/// Processing frame " << ref_frame_idx << std::endl;
+        double first_threshold = 45.0;  //45
+        double first_threshold_rel = 0.7;  //0.7
+        int id_threshold = 0;
+        size_t N = 7;  //number of features. 11
+        double ratio_new=0;
+        int MAX_FRAMES = 12;
+        std::map<int, double> deriv_ratio;
+        std::map<int, double> times_deriv;
+        deriv_ratio[1] = 100.0;
+        times_deriv[1] = 0.0;
+        int gt_starting_frame_ = 0;
 
-    // buscamos el indice de GT que mas se acerca a la imagen0
-    double min_diff = std::numeric_limits<double>::max();
-    for (size_t gt_id0 = 0; gt_id0 < tcam.size(); ++gt_id0) {
-        double diff = std::abs(tcam[ref_frame_idx] - tgt[gt_id0]);
-        if (diff < min_diff) {
-            min_diff = diff;
-            gt_starting_frame_ = static_cast<int>(gt_id0);
-        }
-    }
+        std::cout << "\nDetectando traslacion..." << std::endl;
 
-    // -------------- Obtenemos valores Ground Truth -----
-    double t1_gt = tgt[gt_starting_frame_];
-    Eigen::Vector3d V0_gt = v_gt[gt_starting_frame_];
-    Eigen::Vector3d G_gt = g_gt[gt_starting_frame_];
-    Eigen::Vector3d Bg_gt = bg_gt[gt_starting_frame_];
-    Eigen::Vector3d Ba_gt = ba_gt[gt_starting_frame_];
-    Eigen::Matrix3d R0_gt = quatToRot(qgt[gt_starting_frame_]);
-    
-    std::map<int, double> historico_rmseG, historico_rmseBA, historico_rmseV;
-    historico_rmseG[id_threshold-1] = 999;
-    historico_rmseBA[id_threshold-1] = 999;
-    historico_rmseV[id_threshold-1] = 999;
-    historico_rmseG[id_threshold] = 999;
-    historico_rmseBA[id_threshold] = 999;
-    historico_rmseV[id_threshold] = 999;    
-        /*
-        /////// bias estimation //////////
-        // === Estimación única de bias usando frame i -> i+1 ===
-        int j_bg = ref_frame_idx + 1;
+        double parallax_media_px, parallax_anterior;
 
-        // IMU segment between ref_frame_idx and j_bg
-        double t1_bg = tcam[ref_frame_idx];
-        double t2_bg = tcam[j_bg];
+        for (size_t trigg_disp = 0; trigg_disp  <= 20 ; ++trigg_disp){
+            id_threshold = trigg_disp;
+            int actual_frame = trigg_disp + ref_frame_idx;
+            const auto& img1_path = cam0_image_names[ref_frame_idx];
+            const auto& img2_path = cam0_image_names[actual_frame + 1];
 
-        std::vector<double> imu_times_seg;
-        std::vector<Vector3d> omega_seg_bg, acc_seg_bg;
+            cv::Mat image_1 = cv::imread(img1_path, cv::IMREAD_GRAYSCALE);
+            cv::Mat image_2 = cv::imread(img2_path, cv::IMREAD_GRAYSCALE);
+            if (image_1.empty() || image_2.empty()) continue;
 
-        for (size_t i = 0; i < timu.size(); ++i) {
-            if (timu[i] >= t1_bg && timu[i] <= t2_bg) {
-                imu_times_seg.push_back(timu[i]);
-                omega_seg_bg.push_back(omega[i]);
-                acc_seg_bg.push_back(acc[i]);
-            }
-        }
-        if (imu_times_seg.size() < 2) {
-            std::cerr << "Not enough IMU data to estimate bias." << std::endl;
-            return -1;
-        }
-
-        acc_seg_bg.resize(acc_seg_bg.size() - 1);
-        omega_seg_bg.resize(omega_seg_bg.size() - 1);
-
-        // dts
-        std::vector<double> dts_bg;
-        for (size_t i = 1; i < imu_times_seg.size(); ++i)
-            dts_bg.push_back(imu_times_seg[i] - imu_times_seg[i - 1]);
-
-        // Preintegrated rotation
-        Matrix3d Rpreint_bg = Matrix3d::Identity();
-        std::vector<Vector3d> omega_all_bg;
-
-        for (size_t j = 0; j < omega_seg_bg.size(); ++j) {
-            Rpreint_bg *= lie::ExpMap(omega_seg_bg[j] * dts_bg[j]);
-            omega_all_bg.push_back(omega_seg_bg[j]);
-        }
-
-        // R_ij from C2P
-        auto Ropt_bg = compute_Rij_with_c2p(
-            cam0_image_names[ref_frame_idx],
-            cam0_image_names[j_bg],
-            K, K_cv, dist_cv);
-
-        if (!Ropt_bg) {
-            std::cerr << "[Bias Estimation] Could not compute R_ij between i and i+1." << std::endl;
-            return -1;
-        }
-        Matrix3d R01_bg = *Ropt_bg;
-
-        // Estimate bias
-        double deltat_bg = dts_bg.front();  // o el promedio si querés más robustez
-        Vector3d bg_est = bg_small_angle(omega_all_bg, deltat_bg, Rpreint_bg, R01_bg, tbodycam, tbodyimu);
-        std::cout << "[DEBUG] bg_estimation: " << bg_est.transpose() << std::endl;
-
-        */
-        //////// fin bias estimation //////////////////////////
-        //////////////////////////////////////////////////////////////////////////////////
-
-    preprocessAllTracks(cam0_image_names, tracker, track_manager);
-
-
-    for (size_t n_frames=id_threshold; n_frames <= MAX_FRAMES; ++n_frames){
-
-        // === cada inicialización con un frame de referencia distinto ===
-        int MAX_PUNTOS_CARACTERISTICOS = 20;
-
-        auto valid_tracks = selectTracksForInit(
-            track_manager, ref_frame_idx, n_frames, MAX_PUNTOS_CARACTERISTICOS);
-
-        std::cout << "[INIT] Usando " << valid_tracks.size() 
-                << " tracks para inicialización desde frame " << ref_frame_idx << std::endl;
-
-
-        /*
-        std::cout << "Processing features in multiple images..." << std::endl;
-        for (int i = 0; i < cam0_image_names.size(); ++i) {
-            cv::Mat image = cv::imread(cam0_image_names[i], cv::IMREAD_GRAYSCALE);
-            tracker.processFrame(image, i, track_manager);
-        }
-
-        int MAX_PUNTOS_CARACTERISTICOS = 20;
-        auto valid_tracks = track_manager.getTracksWithMinObservations(4, MAX_PUNTOS_CARACTERISTICOS); //para obtener solo aquellos puntos que fueron vistos en al menos X imágenes distintas.
-
-        std::cout << "Numero de puntos caracteristicos: " << valid_tracks.size() << std::endl;
-        */
-
-        std::map<int, Matrix3d> R_ij_map;
-        std::map<int, Matrix3d> Gamma_j_map;
-        std::map<int, Vector3d> S_j_map;
-        std::map<std::pair<int, int>, Vector3d> mu_ij_map;
-        std::map<int, double> tj_map;
-
-        size_t count_frames = 0;
-        size_t count_points = 0;
-
-
-
-    // we populate the first column with the reference values
-        for (size_t l=1; l<=N; l++){
-            R_ij_map[1] = Matrix3d::Identity();
-            Gamma_j_map[1] = Matrix3d::Identity();
-            S_j_map[1] = Vector3d::Zero(); 
-            tj_map[1] = 0;
-        }
-
-        for (const auto& track : valid_tracks) {
-            if (!track.hasObservation(ref_frame_idx)) continue;
-            count_points++;
-
-            if(count_points > N){
-                std::cout << "All N points processed." << std::endl;
-                break;
-            }
-
-            //std::cout << "Punto " << count_points << " en proceso." << std::endl;
-
+            auto R_k_k1_opt = compute_Rij_with_c2p(
+                img1_path,
+                img2_path,
+                K, K_cv, dist_cv);
             
-            count_frames = 0;
-            for (const auto& obs : track.observations) {
-                int j = obs.frame_idx - ref_frame_idx;      //frame donde el punto caracteristico es visto
-                int i = count_points;                       //identificacion del punto en cuestion (track.id pero normalizado)
-                Vector2d uv = obs.uv;
-                //std::cout << "uv: " << uv.transpose() << std::endl;
+            if (!R_k_k1_opt) {
+                std::cout << "[C2P] without solution (few inliers) in " 
+                        << actual_frame << "->" << actual_frame+1 << "\n";
+                continue; // try the following pair
+            }
+            
+            const Eigen::Matrix3d& R_k_k1 = *R_k_k1_opt;    //reference to the value
+            
+        auto t0 = Clock::now();
+            double parallax_anterior = parallax_media_px;
+            bool criteria_achieved = compute_translation_parallax_score(image_1, image_2, K, R_k_k1, parallax_media_px);
+            auto t1 = Clock::now();
+            double time_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            if(!criteria_achieved) continue;
 
-                if (j < 0) continue;
+            //std::cout << "[frame " << actual_frame << "->" << actual_frame+1
+            //          << "] parallax_media_px = " << parallax_media_px << " px. Time: "<< time_ms <<" ms.\n";
+            
+            double parallax_rel = 0.0;
+            if (parallax_anterior != 0.0) {
+                parallax_rel = std::abs(parallax_media_px - parallax_anterior) / parallax_anterior;
+            }
+            
+            //std::cout << parallax_media_px << std::endl;   //average of 7ms ..... para depurar el desplazamiento y triggering
+            //std::cout << time_ms << std::endl; 
+
+            //if (parallax_media_px >= first_threshold) {
+            if(((parallax_rel >= first_threshold_rel) && (trigg_disp > 2)) || ((parallax_media_px >= first_threshold) && (trigg_disp > 2))){
+                std::cout << " - Criterio alcanzado en " << trigg_disp << " frames." << std::endl;
+                break; // the criteria is achieved
+            }
+
+        }
+
+        ///////////////////////////////////////////////////////////////////////////
+
+
+        // ---------- estimacion de bias ------------
+        auto estimate_bg_once = [&](){
+            int j_bg = ref_frame_idx + 1;
+            double t1_bg = tcam[ref_frame_idx];
+            double t2_bg = tcam[j_bg];
+
+            auto it1 = std::lower_bound(timu.begin(), timu.end(), t1_bg);
+            auto it2 = std::upper_bound(timu.begin(), timu.end(), t2_bg);
+            if (std::distance(it1, it2) < 2) {
+                throw std::runtime_error("Not enough IMU data to estimate bias.");
+            }
+
+            std::vector<double> imu_times_seg(it1, it2);
+            std::vector<Vector3d> omega_seg_bg, acc_seg_bg;
+            {
+                size_t idx1 = std::distance(timu.begin(), it1);
+                size_t idx2 = std::distance(timu.begin(), it2);
+                omega_seg_bg.reserve(idx2-idx1);
+                acc_seg_bg.reserve(idx2-idx1);
+                for (size_t k = idx1; k < idx2; ++k) {
+                    omega_seg_bg.push_back(omega[k]);
+                    acc_seg_bg.push_back(acc[k]);
+                }
+            }
+
+            acc_seg_bg.pop_back();
+            omega_seg_bg.pop_back();
+
+            std::vector<double> dts_bg; dts_bg.reserve(imu_times_seg.size()-1);
+            for (size_t i = 1; i < imu_times_seg.size(); ++i)
+                dts_bg.push_back(imu_times_seg[i] - imu_times_seg[i - 1]);
+
+            Matrix3d Rpreint_bg = Matrix3d::Identity();
+            for (size_t j = 0; j < omega_seg_bg.size(); ++j)
+                Rpreint_bg *= lie::ExpMap(omega_seg_bg[j] * dts_bg[j]);
+
+            // R_ij de C2P solo i->i+1
+            auto Ropt_bg = compute_Rij_with_c2p(
+                cam0_image_names[ref_frame_idx],
+                cam0_image_names[j_bg],
+                K, K_cv, dist_cv);
+            if (!Ropt_bg) throw std::runtime_error("[Bias Estimation] Could not compute R_ij i->i+1.");
+            Matrix3d R01_bg = *Ropt_bg;
+
+            double deltat_bg = std::accumulate(dts_bg.begin(), dts_bg.end(), 0.0) / double(dts_bg.size());
+            return bg_small_angle(omega_seg_bg, deltat_bg, Rpreint_bg, R01_bg, tbodycam, tbodyimu);
+        };
+
+        Vector3d bg_est; 
+        try { bg_est = estimate_bg_once(); }
+        catch (const std::exception& e) { std::cerr << e.what() << std::endl; return -1; }
+        //std::cout << "[DEBUG] bg_estimation: " << bg_est.transpose() << std::endl;
+
+        // -----------------------------------------
+
+        // buscamos el indice de GT que mas se acerca a la imagen0
+        double min_diff = std::numeric_limits<double>::max();
+        for (size_t gt_id0 = 0; gt_id0 < tcam.size(); ++gt_id0) {
+            double diff = std::abs(tcam[ref_frame_idx] - tgt[gt_id0]);
+            if (diff < min_diff) {
+                min_diff = diff;
+                gt_starting_frame_ = static_cast<int>(gt_id0);
+            }
+        }
+
+        // -------------- Obtenemos valores Ground Truth -----
+        double t1_gt = tgt[gt_starting_frame_];
+        Eigen::Vector3d V0_gt = v_gt[gt_starting_frame_];
+        Eigen::Vector3d G_gt = g_gt[gt_starting_frame_];
+        Eigen::Vector3d Bg_gt = bg_gt[gt_starting_frame_];
+        Eigen::Vector3d Ba_gt = ba_gt[gt_starting_frame_];
+        Eigen::Matrix3d R0_gt = quatToRot(qgt[gt_starting_frame_]);
+        
+        std::map<int, double> historico_rmseG, historico_rmseBA, historico_rmseV;
+        historico_rmseG[id_threshold-1] = 999;
+        historico_rmseBA[id_threshold-1] = 999;
+        historico_rmseV[id_threshold-1] = 999;
+        historico_rmseG[id_threshold] = 999;
+        historico_rmseBA[id_threshold] = 999;
+        historico_rmseV[id_threshold] = 999;    
+
+
+        for (size_t n_frames=id_threshold; n_frames <= MAX_FRAMES; ++n_frames){
+
+            // === cada inicialización con un frame de referencia distinto ===
+            int MAX_PUNTOS_CARACTERISTICOS = 20;
+
+            auto valid_tracks = selectTracksForInit(
+                track_manager, ref_frame_idx, n_frames, MAX_PUNTOS_CARACTERISTICOS);
+
+            //std::cout << "[INIT] Usando " << valid_tracks.size() 
+            //        << " tracks para inicialización desde frame " << ref_frame_idx << std::endl;
+
+
+            /*
+            std::cout << "Processing features in multiple images..." << std::endl;
+            for (int i = 0; i < cam0_image_names.size(); ++i) {
+                cv::Mat image = cv::imread(cam0_image_names[i], cv::IMREAD_GRAYSCALE);
+                tracker.processFrame(image, i, track_manager);
+            }
+
+            int MAX_PUNTOS_CARACTERISTICOS = 20;
+            auto valid_tracks = track_manager.getTracksWithMinObservations(4, MAX_PUNTOS_CARACTERISTICOS); //para obtener solo aquellos puntos que fueron vistos en al menos X imágenes distintas.
+
+            std::cout << "Numero de puntos caracteristicos: " << valid_tracks.size() << std::endl;
+            */
+
+            std::map<int, Matrix3d> R_ij_map;
+            std::map<int, Matrix3d> Gamma_j_map;
+            std::map<int, Vector3d> S_j_map;
+            std::map<std::pair<int, int>, Vector3d> mu_ij_map;
+            std::map<int, double> tj_map;
+
+            size_t count_frames = 0;
+            size_t count_points = 0;
+            
+            // we populate the first column with the reference values
+            for (size_t l=1; l<=N; l++){
+                R_ij_map[1] = Matrix3d::Identity();
+                Gamma_j_map[1] = Matrix3d::Identity();
+                S_j_map[1] = Vector3d::Zero(); 
+                tj_map[1] = 0;
+            }
+            //std::cout << "[DEBUG] 1" << std::endl;
+
+            for (const auto& track : valid_tracks) {
+                if (!track.hasObservation(ref_frame_idx)) continue;
+                count_points++;
+
+                if(count_points > N){
+                    std::cout << "All N points processed." << std::endl;
+                    break;
+                }
+
+                //std::cout << "Punto " << count_points << " en proceso." << std::endl;
+
                 
-                if(j==0){
-                    Vector3d mu_1 = computeMuFromUV(uv, K);
-                    if (mu_1.norm() < 1e-5) {
+                count_frames = 0;
+                for (const auto& obs : track.observations) {
+                    int j = obs.frame_idx - ref_frame_idx;      //frame donde el punto caracteristico es visto
+                    int i = count_points;                       //identificacion del punto en cuestion (track.id pero normalizado)
+                    Vector2d uv = obs.uv;
+                    //std::cout << "uv: " << uv.transpose() << std::endl;
+
+                    if (j < 0) continue;
+                    
+                    if(j==0){
+                        Vector3d mu_1 = computeMuFromUV(uv, K);
+                        if (mu_1.norm() < 1e-5) {
+                            std::cerr << "[WARN] mu_j casi nulo para j = " << j << std::endl;
+                            continue;
+                        }
+                        mu_ij_map[{i, 1}] = mu_1;
+                        //std::cout << "mu_1: " << mu_1.transpose()<< std::endl;
+                        continue;
+                    }
+                    
+
+                    count_frames++;
+                    if (count_frames > n_frames) break;
+
+                // std::cout << "i=" << i << " j=" << j << std::endl;
+
+                    /* === 1. Rotación R_ij usando C2P ===
+                    auto Ropt = compute_Rij_with_c2p(
+                        cam0_image_names[ref_frame_idx],
+                        cam0_image_names[obs.frame_idx],
+                        K, K_cv, dist_cv);
+                    if (!Ropt) {
+                        std::cerr << "[C2P] Fallo al calcular R_ij para j = " << j+1 << std::endl;
+                        continue;
+                    }
+                    Matrix3d R_ij = *Ropt;
+                    R_ij_map[{i, j+1}] = R_ij;         // no estoy seguro si necesita multiplicarse por la matrix extrinseca.
+                    //std::cout << "R_ij: " << R_ij << std::endl;
+                    */
+
+                    if(count_points == 1){
+                        // === 2. Intervalo temporal ===
+                        double t1 = tcam[ref_frame_idx];
+                        double t2 = tcam[obs.frame_idx];
+                        tj_map[j+1] = t2 - t1;
+                       // std::cout << "[DEBUG] 2" << std::endl;
+
+                        // === 3. Extraer segmento IMU ===
+                        std::vector<Vector3d> omega_seg, acc_seg;
+                        std::vector<double> dts;
+                        for (size_t ii = 1; ii < timu.size(); ++ii) {
+                           // std::cout << "[DEBUG] 3" << std::endl;
+                            if (timu[ii - 1] < t2 && timu[ii] > t1) {
+                                double dt_imu = timu[ii] - timu[ii - 1];
+                                omega_seg.push_back(omega[ii - 1]);
+                                acc_seg.push_back(acc[ii - 1]);
+                                dts.push_back(dt_imu);
+                            }
+                        }
+
+                        if (dts.empty()) {
+                            std::cerr << "[IMU] Sin muestras entre t1 = " << t1 << " y t2 = " << t2 << std::endl;
+                            continue;
+                        }
+                        
+                        //std::cout << "datos de IMU cargados exitosamente." << t1 << std::endl;
+
+                        // === 4. Integración de Gamma y S ===
+                        Matrix3d R_ij = Matrix3d::Identity();
+                        Matrix3d Gamma = Matrix3d::Zero();
+                        Vector3d S = Vector3d::Zero();
+
+                        double tau_k = t1;
+                        
+                        for (size_t k = 0; k < dts.size(); ++k) {
+                          //  std::cout << "[DEBUG] 4" << std::endl;
+                            double dt = dts[k];
+                            tau_k += dt;
+                            double weight = t2 - tau_k;
+                            if (weight < 0) continue;
+                            R_ij *= lie::ExpMap((omega_seg[k] - bg_est) * dt);
+                            Gamma += weight * R_ij * dt;
+                            S     += weight * R_ij * acc_seg[k] * dt;
+                        }
+                       // std::cout << "[DEBUG] 5" << std::endl;
+
+                        R_ij_map[j+1] = R_ij;
+                        Gamma_j_map[j+1] = Gamma;
+                        S_j_map[j+1] = S;
+                    }
+
+                    // === 5. Calcular mu_ij ===
+                    if (!track.hasObservation(j)) {
+                        std::cerr << "[ERROR] Observation j = " << j+1 << " not found in track.observations!" << std::endl;
+                        continue;
+                    }
+
+                    //Vector2d uv_j = track.observations.at(j).uv;
+                    Vector3d mu_j = computeMuFromUV(uv, K);
+
+                    if (mu_j.norm() < 1e-5) {
                         std::cerr << "[WARN] mu_j casi nulo para j = " << j << std::endl;
                         continue;
                     }
-                    mu_ij_map[{i, 1}] = mu_1;
-                    //std::cout << "mu_1: " << mu_1.transpose()<< std::endl;
-                    continue;
+                  //  std::cout << "[DEBUG] 6" << std::endl;
+
+                    Vector3d mu_ij = R_ij_map[j+1] * mu_j;
+                    mu_ij_map[{i, j+1}] = mu_ij;
+                    //std::cout << "mu_ij: " << mu_ij.transpose()<< std::endl;
+
+
+                    // === Log por cada par (i, j) ===
+                    //std::cout << "j = " << j+1 << " — Δt: " << tj_map[j+1] << " — mu_ij.norm = " << mu_ij.norm() << std::endl;
+                }
+            }
+
+
+            // Construir el vector de tiempos t (t[0] = 0.0; luego las diferencias):
+            std::vector<double> t_vals;
+            int m_detected = 0;
+            t_vals.push_back(0.0); // t0 = 0
+            for (const auto &kv : tj_map) {
+                // kv.first corresponde al índice j+1 y kv.second a Δt
+                if (kv.first > 1) {
+                    t_vals.push_back(kv.second);
+                    ++m_detected;
+                }
+            }
+
+            // Resolver VINS con sesgo
+            VISolution sol;
+            double gravity_mag = 9.81; // o el valor que uses para la gravedad
+
+            if (solveVINSWithBias(Gamma_j_map, S_j_map, mu_ij_map, t_vals, gravity_mag, sol)) {
+                std::cout << "------- Results with " << n_frames << " frames -------" << std::endl;
+                Eigen::Vector3d gravity = R0_gt*sol.gravity;
+                Eigen::Vector3d bias_acc = R0_gt*sol.bias;
+                //Eigen::Vector3d velocity_w = R0_gt*sol.velocity;  //da mayor
+                //std::cout << "Gravedad [f0]: " << sol.gravity.transpose() << std::endl;
+                std::cout << "Gravedad: " << gravity.transpose() << std::endl;    //world coordinates
+                std::cout << "Velocidad inicial: " << sol.velocity.transpose() << std::endl;
+                //std::cout << "ba estimado: " << sol.bias.transpose() << std::endl;
+                std::cout << "ba estimado: " << bias_acc.transpose() << std::endl;
+                // Puedes recorrer sol.lambdas para obtener las escalas λ_i_j de cada característica
+                /*
+                for (const auto &kv : sol.lambdas) {
+                    int i = kv.first.first;
+                    int j = kv.first.second;
+                    double lambda_ij = kv.second;
+                    std::cout << "λ(" << i << "," << j << ") = " << lambda_ij << std::endl;
+                }
+                */
+                //-----------  Errores RMSE ---------
+                double rmse_gravity = rmse_ang(gravity, G_gt);
+                double rmse_velocity = rmse(sol.velocity, V0_gt);
+                //double rmse_bias_a     = rmse(sol.bias, Ba_gt);
+                double rmse_bias_a   = rmse(bias_acc,Ba_gt);
+                double rmse_bias_g     = rmse(bg_est, Bg_gt);
+                std::cout << "RMSE gravedad: " << rmse_gravity << " deg" << std::endl;
+                std::cout << "RMSE velocidad: " << rmse_velocity << " m/s"   << std::endl;
+                //std::cout << "RMSE bias acc: " << rmse_bias_a     << " m/s^2" << std::endl;
+                std::cout << "RMSE bias acc: " << rmse_bias_a     << " m/s^2" << std::endl;
+                std::cout << "RMSE bias gyr: " << rmse_bias_g     << " rad/s" << std::endl;
+            
+                
+                
+                ///// corroboramos que los errores siempre bajen
+                historico_rmseG[n_frames] = rmse_gravity;
+                historico_rmseBA[n_frames] = rmse_bias_a;
+                historico_rmseV[n_frames] = rmse_velocity;
+
+                //if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0  && (historico_rmseV[n_frames] - historico_rmseV[n_frames-1]) > 0.0 && (historico_rmseBA[n_frames] - historico_rmseBA[n_frames-1]) > 0.0 ){
+                if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0 ){
+                    int trigg_hessian = n_frames-1;
+                    std::cout << "------- Solucion estable alcanzada en (" << trigg_hessian << ") frames -----"  << std::endl;
+                    std::cout << "RMSE gravedad: " << historico_rmseG[trigg_hessian] << " deg" << std::endl;
+                    std::cout << "RMSE velocidad: " << historico_rmseV[trigg_hessian] << " m/s"   << std::endl;
+                    std::cout << "RMSE bias acc: " << historico_rmseBA[trigg_hessian]     << " m/s^2" << std::endl;
+                    std::cout << "RMSE bias gyr: " << rmse_bias_g  << " rad/s" << std::endl;
+                    break;
                 }
                 
+                // ---- CSV: guardar fila "OK"
+                InitResult row_ok;
+                row_ok.ref_idx      = ref_frame_idx;                     
+                row_ok.n_frames     = static_cast<int>(n_frames);
+                row_ok.gravity      = gravity;
+                row_ok.velocity     = sol.velocity;
+                row_ok.ba           = bias_acc;
+                row_ok.rmse_g_deg   = rmse_gravity;
+                row_ok.rmse_v_ms    = rmse_velocity;
+                row_ok.rmse_ba_ms2  = rmse_bias_a;
+                row_ok.rmse_bg_rads = rmse_bias_g;
+                row_ok.status       = "OK";
+                logger.append(row_ok);
 
-                count_frames++;
-                if (count_frames > n_frames) break;
-
-            // std::cout << "i=" << i << " j=" << j << std::endl;
-
-                /* === 1. Rotación R_ij usando C2P ===
-                auto Ropt = compute_Rij_with_c2p(
-                    cam0_image_names[ref_frame_idx],
-                    cam0_image_names[obs.frame_idx],
-                    K, K_cv, dist_cv);
-                if (!Ropt) {
-                    std::cerr << "[C2P] Fallo al calcular R_ij para j = " << j+1 << std::endl;
-                    continue;
-                }
-                Matrix3d R_ij = *Ropt;
-                R_ij_map[{i, j+1}] = R_ij;         // no estoy seguro si necesita multiplicarse por la matrix extrinseca.
-                //std::cout << "R_ij: " << R_ij << std::endl;
-                */
-
-                if(count_points == 1){
-                    // === 2. Intervalo temporal ===
-                    double t1 = tcam[ref_frame_idx];
-                    double t2 = tcam[obs.frame_idx];
-                    tj_map[j+1] = t2 - t1;
-                    
-                    // === 3. Extraer segmento IMU ===
-                    std::vector<Vector3d> omega_seg, acc_seg;
-                    std::vector<double> dts;
-                    for (size_t ii = 1; ii < timu.size(); ++ii) {
-                        if (timu[ii - 1] < t2 && timu[ii] > t1) {
-                            double dt_imu = timu[ii] - timu[ii - 1];
-                            omega_seg.push_back(omega[ii - 1]);
-                            acc_seg.push_back(acc[ii - 1]);
-                            dts.push_back(dt_imu);
-                        }
-                    }
-
-                    if (dts.empty()) {
-                        std::cerr << "[IMU] Sin muestras entre t1 = " << t1 << " y t2 = " << t2 << std::endl;
-                        continue;
-                    }
-                    
-                    //std::cout << "datos de IMU cargados exitosamente." << t1 << std::endl;
-
-                    // === 4. Integración de Gamma y S ===
-                    Matrix3d R_ij = Matrix3d::Identity();
-                    Matrix3d Gamma = Matrix3d::Zero();
-                    Vector3d S = Vector3d::Zero();
-
-                    double tau_k = t1;
-                    
-                    for (size_t k = 0; k < dts.size(); ++k) {
-                        double dt = dts[k];
-                        tau_k += dt;
-                        double weight = t2 - tau_k;
-                        if (weight < 0) continue;
-                        R_ij *= lie::ExpMap((omega_seg[k] - bg_est) * dt);
-                        Gamma += weight * R_ij * dt;
-                        S     += weight * R_ij * acc_seg[k] * dt;
-                    }
-                    R_ij_map[j+1] = R_ij;
-                    Gamma_j_map[j+1] = Gamma;
-                    S_j_map[j+1] = S;
-                }
-
-                // === 5. Calcular mu_ij ===
-                if (!track.hasObservation(j)) {
-                    std::cerr << "[ERROR] Observation j = " << j+1 << " not found in track.observations!" << std::endl;
-                    continue;
-                }
-
-                //Vector2d uv_j = track.observations.at(j).uv;
-                Vector3d mu_j = computeMuFromUV(uv, K);
-
-                if (mu_j.norm() < 1e-5) {
-                    std::cerr << "[WARN] mu_j casi nulo para j = " << j << std::endl;
-                    continue;
-                }
-                Vector3d mu_ij = R_ij_map[j+1] * mu_j;
-                mu_ij_map[{i, j+1}] = mu_ij;
-                //std::cout << "mu_ij: " << mu_ij.transpose()<< std::endl;
-
-
-                // === Log por cada par (i, j) ===
-                //std::cout << "j = " << j+1 << " — Δt: " << tj_map[j+1] << " — mu_ij.norm = " << mu_ij.norm() << std::endl;
+            } else {
+                std::cerr << "[Solver] No se pudo resolver el sistema visual-inercial." << std::endl;
             }
         }
-
-
-        // Construir el vector de tiempos t (t[0] = 0.0; luego las diferencias):
-        std::vector<double> t_vals;
-        int m_detected = 0;
-        t_vals.push_back(0.0); // t0 = 0
-        for (const auto &kv : tj_map) {
-            // kv.first corresponde al índice j+1 y kv.second a Δt
-            if (kv.first > 1) {
-                t_vals.push_back(kv.second);
-                ++m_detected;
-            }
-        }
-
-        // Resolver VINS con sesgo
-        VISolution sol;
-        double gravity_mag = 9.81; // o el valor que uses para la gravedad
-
-        if (solveVINSWithBias(Gamma_j_map, S_j_map, mu_ij_map, t_vals, gravity_mag, sol)) {
-            std::cout << "------- Results with " << n_frames << " frames -------" << std::endl;
-            Eigen::Vector3d gravity_w = R0_gt*sol.gravity;
-            Eigen::Vector3d bias_acc_w = R0_gt*sol.bias;
-            //Eigen::Vector3d velocity_w = R0_gt*sol.velocity;  //da mayor
-            //std::cout << "Gravedad [f0]: " << sol.gravity.transpose() << std::endl;
-            std::cout << "Gravedad: " << gravity_w.transpose() << std::endl;    //world coordinates
-            std::cout << "Velocidad inicial: " << sol.velocity.transpose() << std::endl;
-            //std::cout << "ba estimado: " << sol.bias.transpose() << std::endl;
-            std::cout << "ba estimado: " << bias_acc_w.transpose() << std::endl;
-            // Puedes recorrer sol.lambdas para obtener las escalas λ_i_j de cada característica
-            /*
-            for (const auto &kv : sol.lambdas) {
-                int i = kv.first.first;
-                int j = kv.first.second;
-                double lambda_ij = kv.second;
-                std::cout << "λ(" << i << "," << j << ") = " << lambda_ij << std::endl;
-            }
-            */
-            //-----------  Errores RMSE ---------
-            double rmse_gravity = rmse_ang(gravity_w, G_gt);
-            double rmse_velocity = rmse(sol.velocity, V0_gt);
-            double rmse_bias_a     = rmse(sol.bias, Ba_gt);
-            double rmse_bias_a_w   = rmse(bias_acc_w,Ba_gt);
-            double rmse_bias_g     = rmse(bg_est, Bg_gt);
-            std::cout << "RMSE gravedad: " << rmse_gravity << " deg" << std::endl;
-            std::cout << "RMSE velocidad: " << rmse_velocity << " m/s"   << std::endl;
-            //std::cout << "RMSE bias acc: " << rmse_bias_a     << " m/s^2" << std::endl;
-            std::cout << "RMSE bias acc: " << rmse_bias_a_w     << " m/s^2" << std::endl;
-            std::cout << "RMSE bias gyr: " << rmse_bias_g     << " rad/s" << std::endl;
-            ///// corroboramos que los errores siempre bajen
-            historico_rmseG[n_frames] = rmse_gravity;
-            historico_rmseBA[n_frames] = rmse_bias_a_w;
-            historico_rmseV[n_frames] = rmse_velocity;
-
-            //if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0  && (historico_rmseV[n_frames] - historico_rmseV[n_frames-1]) > 0.0 && (historico_rmseBA[n_frames] - historico_rmseBA[n_frames-1]) > 0.0 ){
-            if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0 ){
-                std::cout << "------- Solucion estable alcanzada en (" << n_frames-1 << ") frames -----"  << std::endl;
-                std::cout << "RMSE gravedad: " << historico_rmseG[n_frames-1] << " deg" << std::endl;
-                std::cout << "RMSE velocidad: " << historico_rmseV[n_frames-1] << " m/s"   << std::endl;
-                std::cout << "RMSE bias acc: " << historico_rmseBA[n_frames-1]     << " m/s^2" << std::endl;
-                std::cout << "RMSE bias gyr: " << rmse_bias_g     << " rad/s" << std::endl;
-                break;
-            }
-
-
-        } else {
-            std::cerr << "[Solver] No se pudo resolver el sistema visual-inercial." << std::endl;
-        }
+    
+    // proceso siguiente frame
+   // }      
+    return 0;
+}
 
 
 
@@ -942,7 +1029,6 @@ int main(int argc, char** argv) {
         */
         // -------------------------- End  eq system -----------------
 
-    }
 
     /*
     std::cout << "evolucion de ratio" << std::endl;
@@ -957,8 +1043,7 @@ int main(int argc, char** argv) {
     }
     */
 
-    return 0;
-} 
+
 
 
 
