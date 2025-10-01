@@ -373,7 +373,7 @@ inline std::string make_csv_basename(const std::string& seq_name, int ref_idx) {
 #endif
     std::ostringstream oss;
     oss << "results_" << seq_name
-        << "_ref" << ref_idx << "_"
+        //<< "_ref" << ref_idx << "_"
         << (tm.tm_year + 1900)
         << std::setw(2) << std::setfill('0') << tm.tm_mon + 1
         << std::setw(2) << std::setfill('0') << tm.tm_mday << "_"
@@ -488,10 +488,10 @@ int main(int argc, char** argv) {
     //    general parameters
 
 
-    //for(int ref_frame_idx = 108; ref_frame_idx < 109; ref_frame_idx += 10)
-    //{
+    for(int ref_frame_idx = 1; ref_frame_idx < tcam.size(); ref_frame_idx += 250)
+    {
 
-        int ref_frame_idx = 508;    //108
+        //int ref_frame_idx = 508;    //108
         
         std::string seq_name = infer_sequence_name(argv[1]);
         CsvLogger logger(make_project_results_path(argv[1], seq_name, ref_frame_idx));
@@ -552,7 +552,7 @@ int main(int argc, char** argv) {
                 parallax_rel = std::abs(parallax_media_px - parallax_anterior) / parallax_anterior;
             }
             
-            //std::cout << parallax_media_px << std::endl;   //average of 7ms ..... para depurar el desplazamiento y triggering
+            std::cout << parallax_media_px << std::endl;   //average of 7ms ..... para depurar el desplazamiento y triggering
             //std::cout << time_ms << std::endl; 
 
             //if (parallax_media_px >= first_threshold) {
@@ -673,24 +673,128 @@ int main(int argc, char** argv) {
             std::cout << "Numero de puntos caracteristicos: " << valid_tracks.size() << std::endl;
             */
 
+            size_t count_frames = 0;
+            //size_t count_points = 0;
+            
             std::map<int, Matrix3d> R_ij_map;
             std::map<int, Matrix3d> Gamma_j_map;
             std::map<int, Vector3d> S_j_map;
             std::map<std::pair<int, int>, Vector3d> mu_ij_map;
             std::map<int, double> tj_map;
 
-            size_t count_frames = 0;
-            size_t count_points = 0;
-            
-            // we populate the first column with the reference values
-            for (size_t l=1; l<=N; l++){
-                R_ij_map[1] = Matrix3d::Identity();
-                Gamma_j_map[1] = Matrix3d::Identity();
-                S_j_map[1] = Vector3d::Zero(); 
-                tj_map[1] = 0;
-            }
-            //std::cout << "[DEBUG] 1" << std::endl;
+            R_ij_map.clear();
+            Gamma_j_map.clear();
+            S_j_map.clear();
+            tj_map.clear();
 
+            // Columna de referencia (key=1)
+            R_ij_map[1]    = Matrix3d::Identity();
+            Gamma_j_map[1] = Matrix3d::Identity();
+            S_j_map[1]     = Vector3d::Zero();
+            tj_map[1]      = 0.0;
+            //std::cout << "[DEBUG] 1" << std::endl;
+            
+            // --------- precomputo 
+            std::vector<int> keys_disponibles; // guardamos qué columnas j+1 existen realmente
+            for (int rel_j = 1; rel_j <= (int)n_frames; ++rel_j) {
+                int abs_j = ref_frame_idx + rel_j;
+                if (abs_j >= (int)tcam.size()) break;
+
+                const double t1 = tcam[ref_frame_idx];
+                const double t2 = tcam[abs_j];
+                if (t2 <= t1) continue;
+
+                // Extraer segmento IMU en [t1, t2]
+                std::vector<Vector3d> omega_seg, acc_seg;
+                std::vector<double> dts;
+                for (size_t k = 1; k < timu.size(); ++k) {
+                    if (timu[k-1] >= t1 && timu[k] <= t2) {
+                        const double dt = timu[k] - timu[k-1];
+                        if (dt <= 0) continue;
+                        omega_seg.push_back(omega[k-1]);
+                        acc_seg.push_back(acc[k-1]);
+                        dts.push_back(dt);
+                    }
+                }
+                if (dts.empty()) continue;
+
+                Matrix3d R_ij = Matrix3d::Identity();
+                Matrix3d Gamma = Matrix3d::Zero();
+                Vector3d S = Vector3d::Zero();
+                double tau_k = t1;
+
+                for (size_t k = 0; k < dts.size(); ++k) {
+                    const double dt = dts[k];
+                    tau_k += dt;
+                    const double w = t2 - tau_k;
+                    if (w < 0) continue;
+                    R_ij *= lie::ExpMap((omega_seg[k] - bg_est) * dt);
+                    Gamma += w * R_ij * dt;
+                    S     += w * R_ij * acc_seg[k] * dt;
+                }
+
+                const int key = rel_j + 1;  // columna 2..n
+                R_ij_map[key]    = R_ij;
+                Gamma_j_map[key] = Gamma;
+                S_j_map[key]     = S;
+                tj_map[key]      = (t2 - t1);
+                keys_disponibles.push_back(key);
+            }
+
+            // ------ recorremos tracks (corregido) ------
+            size_t count_points = 0;
+
+            for (const auto& track : valid_tracks) {
+                if (!track.hasObservation(ref_frame_idx)) continue;
+                ++count_points;
+                if (count_points > N) { std::cout << "All N points processed.\n"; break; }
+
+                int i = (int)count_points; // id compacto del punto
+                size_t usados = 0;
+
+                // IMPORTANTE: obs.frame_idx es ABSOLUTO
+                for (const auto& obs : track.observations) {
+                    int abs_j = obs.frame_idx;
+                    int rel_j = abs_j - ref_frame_idx; // relativo para nuestros mapas
+                    if (rel_j < 0 || rel_j > (int)n_frames) continue;
+
+                    // j == 0 → columna referencia
+                    if (rel_j == 0) {
+                        Vector3d mu_1 = computeMuFromUV(obs.uv, K);
+                        if (mu_1.norm() < 1e-5) continue;
+                        mu_ij_map[{i, 1}] = mu_1;
+                        continue;
+                    }
+
+                    // Usar R_ij precomputado (key = rel_j+1)
+                    int key = rel_j + 1;
+                    auto itR = R_ij_map.find(key);
+                    if (itR == R_ij_map.end()) {
+                        // no tenemos integración válida para este j
+                        continue;
+                    }
+
+                    // NO consultar el track con 'j' relativo; ya tenemos la obs actual
+                    Vector3d mu_j = computeMuFromUV(obs.uv, K);
+                    if (mu_j.norm() < 1e-5) continue;
+
+                    Vector3d mu_ij = itR->second * mu_j;
+                    mu_ij_map[{i, key}] = mu_ij;
+
+                    // límite por frames efectivos por punto (opcional)
+                    if (++usados >= n_frames) break;
+                }
+            }
+
+            // -------- fin recorrido tracks (corregido) ----
+
+
+
+
+
+
+            /*
+            // ------------- recorremos tracks ------
             for (const auto& track : valid_tracks) {
                 if (!track.hasObservation(ref_frame_idx)) continue;
                 count_points++;
@@ -729,19 +833,19 @@ int main(int argc, char** argv) {
 
                 // std::cout << "i=" << i << " j=" << j << std::endl;
 
-                    /* === 1. Rotación R_ij usando C2P ===
-                    auto Ropt = compute_Rij_with_c2p(
-                        cam0_image_names[ref_frame_idx],
-                        cam0_image_names[obs.frame_idx],
-                        K, K_cv, dist_cv);
-                    if (!Ropt) {
-                        std::cerr << "[C2P] Fallo al calcular R_ij para j = " << j+1 << std::endl;
-                        continue;
-                    }
-                    Matrix3d R_ij = *Ropt;
-                    R_ij_map[{i, j+1}] = R_ij;         // no estoy seguro si necesita multiplicarse por la matrix extrinseca.
-                    //std::cout << "R_ij: " << R_ij << std::endl;
-                    */
+                    // === 1. Rotación R_ij usando C2P ===
+                    //auto Ropt = compute_Rij_with_c2p(
+                    //    cam0_image_names[ref_frame_idx],
+                    //    cam0_image_names[obs.frame_idx],
+                    //    K, K_cv, dist_cv);
+                    //if (!Ropt) {
+                    //    std::cerr << "[C2P] Fallo al calcular R_ij para j = " << j+1 << std::endl;
+                    //    continue;
+                    //}
+                    //Matrix3d R_ij = *Ropt;
+                    //R_ij_map[{i, j+1}] = R_ij;         // no estoy seguro si necesita multiplicarse por la matrix extrinseca.
+                    ////std::cout << "R_ij: " << R_ij << std::endl;
+                    
 
                     if(count_points == 1){
                         // === 2. Intervalo temporal ===
@@ -817,10 +921,30 @@ int main(int argc, char** argv) {
                     // === Log por cada par (i, j) ===
                     //std::cout << "j = " << j+1 << " — Δt: " << tj_map[j+1] << " — mu_ij.norm = " << mu_ij.norm() << std::endl;
                 }
-            }
-
+            }   
+            // ----------  fin recorrido tracks
+            */
 
             // Construir el vector de tiempos t (t[0] = 0.0; luego las diferencias):
+            std::sort(keys_disponibles.begin(), keys_disponibles.end());
+            keys_disponibles.erase(
+                std::unique(keys_disponibles.begin(), keys_disponibles.end()),
+                keys_disponibles.end()
+            );
+
+            std::vector<double> t_vals;
+            t_vals.reserve(keys_disponibles.size());
+            t_vals.push_back(0.0); // t0
+
+            for (int key : keys_disponibles) {
+                // key = rel_j + 1; queremos Δt_j para cada columna existente
+                auto it = tj_map.find(key);
+                if (it == tj_map.end()) continue;
+                t_vals.push_back(it->second);
+            }
+
+            /*
+            //  ------ calculamos tvals 
             std::vector<double> t_vals;
             int m_detected = 0;
             t_vals.push_back(0.0); // t0 = 0
@@ -831,8 +955,11 @@ int main(int argc, char** argv) {
                     ++m_detected;
                 }
             }
+            */
 
-            // Resolver VINS con sesgo
+
+
+            // ---------- Resolver VINS con sesgo
             VISolution sol;
             double gravity_mag = 9.81; // o el valor que uses para la gravedad
 
@@ -875,14 +1002,16 @@ int main(int argc, char** argv) {
                 historico_rmseV[n_frames] = rmse_velocity;
 
                 //if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0  && (historico_rmseV[n_frames] - historico_rmseV[n_frames-1]) > 0.0 && (historico_rmseBA[n_frames] - historico_rmseBA[n_frames-1]) > 0.0 ){
-                if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0 ){
-                    int trigg_hessian = n_frames-1;
-                    std::cout << "------- Solucion estable alcanzada en (" << trigg_hessian << ") frames -----"  << std::endl;
-                    std::cout << "RMSE gravedad: " << historico_rmseG[trigg_hessian] << " deg" << std::endl;
-                    std::cout << "RMSE velocidad: " << historico_rmseV[trigg_hessian] << " m/s"   << std::endl;
-                    std::cout << "RMSE bias acc: " << historico_rmseBA[trigg_hessian]     << " m/s^2" << std::endl;
-                    std::cout << "RMSE bias gyr: " << rmse_bias_g  << " rad/s" << std::endl;
-                    break;
+                if (n_frames > id_threshold) {
+                    if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0 ){
+                        int trigg_hessian = n_frames-1;
+                        std::cout << "------- Solucion estable alcanzada en (" << trigg_hessian << ") frames -----"  << std::endl;
+                        std::cout << "RMSE gravedad: " << historico_rmseG[trigg_hessian] << " deg" << std::endl;
+                        std::cout << "RMSE velocidad: " << historico_rmseV[trigg_hessian] << " m/s"   << std::endl;
+                        std::cout << "RMSE bias acc: " << historico_rmseBA[trigg_hessian]     << " m/s^2" << std::endl;
+                        std::cout << "RMSE bias gyr: " << rmse_bias_g  << " rad/s" << std::endl;
+                        break;
+                    }
                 }
                 
                 // ---- CSV: guardar fila "OK"
@@ -903,14 +1032,18 @@ int main(int argc, char** argv) {
                 std::cerr << "[Solver] No se pudo resolver el sistema visual-inercial." << std::endl;
             }
         }
-    
     // proceso siguiente frame
-   // }      
+    }      
     return 0;
 }
 
 
 
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
         /*
         // -------------------------------  Building the equation system  -----------------------
         auto t0 = Clock::now();
