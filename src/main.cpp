@@ -29,6 +29,50 @@
 #include <cmath>
 
 
+void preprocessAllTracks(
+    const std::vector<std::string>& cam0_image_names,
+    FeatureTracker& tracker,
+    TrackManager& track_manager)
+{
+    std::cout << "[PREPROCESS] Procesando todas las imágenes..." << std::endl;
+    for (int i = 0; i < cam0_image_names.size(); ++i) {
+        cv::Mat image = cv::imread(cam0_image_names[i], cv::IMREAD_GRAYSCALE);
+        tracker.processFrame(image, i, track_manager);
+    }
+    std::cout << "[PREPROCESS] Tracks completos almacenados en TrackManager." << std::endl;
+}
+
+std::vector<PointTrack> selectTracksForInit(
+    TrackManager& track_manager,
+    int ref_frame_idx,
+    int n_frames,
+    int max_tracks)
+{
+    // Buscar tracks que aparezcan al menos en X frames después de ref_frame_idx
+    int min_obs = 4; // configurable
+    auto valid_tracks = track_manager.getTracksWithMinObservations(min_obs);
+
+    std::vector<PointTrack> subset;
+    for (const auto& tr : valid_tracks) {
+        bool has_ref = tr.hasObservation(ref_frame_idx);
+        if (!has_ref) continue;
+
+        bool has_future = false;
+        for (int j = 1; j <= n_frames; ++j) {
+            if (tr.hasObservation(ref_frame_idx + j)) {
+                has_future = true;
+                break;
+            }
+        }
+        if (has_future) {
+            subset.push_back(tr);
+            if ((int)subset.size() >= max_tracks) break;
+        }
+    }
+    return subset;
+}
+
+
 double rmse(const Eigen::Vector3d &est, const Eigen::Vector3d &gt) {
     Eigen::Vector3d diff = est - gt;
     return std::sqrt(diff.squaredNorm() / 3.0);  // 3 componentes
@@ -290,7 +334,11 @@ int main(int argc, char** argv) {
     std::cerr << "Dataset loaded." << std::endl;
     // Load camera calibration
     std::string yaml_file = path_to_euroc_data + "/mav0/cam0/sensor.yaml";
-    auto [K, distortion_params, image_size] = load_camera_calibration(yaml_file);
+    //auto [K, distortion_params, image_size] = load_camera_calibration(yaml_file);
+    auto calib = load_camera_calibration(yaml_file);
+    auto& K = calib.K;
+    auto& distortion_params = calib.distortion_params;
+    auto& image_size = calib.image_size;
     cv::Mat K_cv; cv::eigen2cv(K, K_cv);
     std::cout << "K matrix: " << K << std::endl;
     cv::Mat dist_cv(distortion_params);
@@ -375,7 +423,7 @@ int main(int argc, char** argv) {
         //std::cout << time_ms << std::endl; 
 
         //if (parallax_media_px >= first_threshold) {
-        if((parallax_rel >= first_threshold_rel) && (idx_trigg > 1)){
+        if(((parallax_rel >= first_threshold_rel) && (idx_trigg > 1)) || ((parallax_media_px >= first_threshold) && (idx_trigg > 1))){
             std::cout << "\n -- Criterio alcanzado en " << idx_trigg << " frames." << std::endl;
             break; // the criteria is achieved
         }
@@ -394,6 +442,64 @@ int main(int argc, char** argv) {
     times_deriv[1] = 0.0;
     int gt_starting_frame_ = 0;
 
+    // ---------- estimacion de bias ------------
+    
+    auto estimate_bg_once = [&](){
+        int j_bg = ref_frame_idx + 1;
+        double t1_bg = tcam[ref_frame_idx];
+        double t2_bg = tcam[j_bg];
+
+        auto it1 = std::lower_bound(timu.begin(), timu.end(), t1_bg);
+        auto it2 = std::upper_bound(timu.begin(), timu.end(), t2_bg);
+        if (std::distance(it1, it2) < 2) {
+            throw std::runtime_error("Not enough IMU data to estimate bias.");
+        }
+
+        std::vector<double> imu_times_seg(it1, it2);
+        std::vector<Vector3d> omega_seg_bg, acc_seg_bg;
+        {
+            size_t idx1 = std::distance(timu.begin(), it1);
+            size_t idx2 = std::distance(timu.begin(), it2);
+            omega_seg_bg.reserve(idx2-idx1);
+            acc_seg_bg.reserve(idx2-idx1);
+            for (size_t k = idx1; k < idx2; ++k) {
+                omega_seg_bg.push_back(omega[k]);
+                acc_seg_bg.push_back(acc[k]);
+            }
+        }
+
+        acc_seg_bg.pop_back();
+        omega_seg_bg.pop_back();
+
+        std::vector<double> dts_bg; dts_bg.reserve(imu_times_seg.size()-1);
+        for (size_t i = 1; i < imu_times_seg.size(); ++i)
+            dts_bg.push_back(imu_times_seg[i] - imu_times_seg[i - 1]);
+
+        Matrix3d Rpreint_bg = Matrix3d::Identity();
+        for (size_t j = 0; j < omega_seg_bg.size(); ++j)
+            Rpreint_bg *= lie::ExpMap(omega_seg_bg[j] * dts_bg[j]);
+
+        // R_ij de C2P solo i->i+1
+        auto Ropt_bg = compute_Rij_with_c2p(
+            cam0_image_names[ref_frame_idx],
+            cam0_image_names[j_bg],
+            K, K_cv, dist_cv);
+        if (!Ropt_bg) throw std::runtime_error("[Bias Estimation] Could not compute R_ij i->i+1.");
+        Matrix3d R01_bg = *Ropt_bg;
+
+        double deltat_bg = std::accumulate(dts_bg.begin(), dts_bg.end(), 0.0) / double(dts_bg.size());
+        return bg_small_angle(omega_seg_bg, deltat_bg, Rpreint_bg, R01_bg, tbodycam, tbodyimu);
+    };
+
+    Vector3d bg_est; 
+    try { bg_est = estimate_bg_once(); }
+    catch (const std::exception& e) { std::cerr << e.what() << std::endl; return -1; }
+    std::cout << "[DEBUG] bg_estimation: " << bg_est.transpose() << std::endl;
+
+    // -----------------------------------------
+
+
+
     // buscamos el indice de GT que mas se acerca a la imagen0
     double min_diff = std::numeric_limits<double>::max();
     for (size_t gt_id0 = 0; gt_id0 < tcam.size(); ++gt_id0) {
@@ -403,7 +509,8 @@ int main(int argc, char** argv) {
             gt_starting_frame_ = static_cast<int>(gt_id0);
         }
     }
-    // Obtenemos valores Ground Truth
+
+    // -------------- Obtenemos valores Ground Truth -----
     double t1_gt = tgt[gt_starting_frame_];
     Eigen::Vector3d V0_gt = v_gt[gt_starting_frame_];
     Eigen::Vector3d G_gt = g_gt[gt_starting_frame_];
@@ -418,8 +525,7 @@ int main(int argc, char** argv) {
     historico_rmseG[id_threshold] = 999;
     historico_rmseBA[id_threshold] = 999;
     historico_rmseV[id_threshold] = 999;    
-    for (size_t n_frames=id_threshold; n_frames <= MAX_FRAMES; ++n_frames){
-
+        /*
         /////// bias estimation //////////
         // === Estimación única de bias usando frame i -> i+1 ===
         int j_bg = ref_frame_idx + 1;
@@ -477,18 +583,37 @@ int main(int argc, char** argv) {
         Vector3d bg_est = bg_small_angle(omega_all_bg, deltat_bg, Rpreint_bg, R01_bg, tbodycam, tbodyimu);
         std::cout << "[DEBUG] bg_estimation: " << bg_est.transpose() << std::endl;
 
+        */
         //////// fin bias estimation //////////////////////////
         //////////////////////////////////////////////////////////////////////////////////
 
+    preprocessAllTracks(cam0_image_names, tracker, track_manager);
+
+
+    for (size_t n_frames=id_threshold; n_frames <= MAX_FRAMES; ++n_frames){
+
+        // === cada inicialización con un frame de referencia distinto ===
+        int MAX_PUNTOS_CARACTERISTICOS = 20;
+
+        auto valid_tracks = selectTracksForInit(
+            track_manager, ref_frame_idx, n_frames, MAX_PUNTOS_CARACTERISTICOS);
+
+        std::cout << "[INIT] Usando " << valid_tracks.size() 
+                << " tracks para inicialización desde frame " << ref_frame_idx << std::endl;
+
+
+        /*
         std::cout << "Processing features in multiple images..." << std::endl;
         for (int i = 0; i < cam0_image_names.size(); ++i) {
             cv::Mat image = cv::imread(cam0_image_names[i], cv::IMREAD_GRAYSCALE);
             tracker.processFrame(image, i, track_manager);
         }
 
-        auto valid_tracks = track_manager.getTracksWithMinObservations(5); //para obtener solo aquellos puntos que fueron vistos en al menos X imágenes distintas.
+        int MAX_PUNTOS_CARACTERISTICOS = 20;
+        auto valid_tracks = track_manager.getTracksWithMinObservations(4, MAX_PUNTOS_CARACTERISTICOS); //para obtener solo aquellos puntos que fueron vistos en al menos X imágenes distintas.
 
         std::cout << "Numero de puntos caracteristicos: " << valid_tracks.size() << std::endl;
+        */
 
         std::map<int, Matrix3d> R_ij_map;
         std::map<int, Matrix3d> Gamma_j_map;
@@ -650,11 +775,13 @@ int main(int argc, char** argv) {
         if (solveVINSWithBias(Gamma_j_map, S_j_map, mu_ij_map, t_vals, gravity_mag, sol)) {
             std::cout << "------- Results with " << n_frames << " frames -------" << std::endl;
             Eigen::Vector3d gravity_w = R0_gt*sol.gravity;
+            Eigen::Vector3d bias_acc_w = R0_gt*sol.bias;
             //Eigen::Vector3d velocity_w = R0_gt*sol.velocity;  //da mayor
             //std::cout << "Gravedad [f0]: " << sol.gravity.transpose() << std::endl;
             std::cout << "Gravedad: " << gravity_w.transpose() << std::endl;    //world coordinates
             std::cout << "Velocidad inicial: " << sol.velocity.transpose() << std::endl;
-            std::cout << "ba estimado: " << sol.bias.transpose() << std::endl;
+            //std::cout << "ba estimado: " << sol.bias.transpose() << std::endl;
+            std::cout << "ba estimado: " << bias_acc_w.transpose() << std::endl;
             // Puedes recorrer sol.lambdas para obtener las escalas λ_i_j de cada característica
             /*
             for (const auto &kv : sol.lambdas) {
@@ -668,17 +795,20 @@ int main(int argc, char** argv) {
             double rmse_gravity = rmse_ang(gravity_w, G_gt);
             double rmse_velocity = rmse(sol.velocity, V0_gt);
             double rmse_bias_a     = rmse(sol.bias, Ba_gt);
+            double rmse_bias_a_w   = rmse(bias_acc_w,Ba_gt);
             double rmse_bias_g     = rmse(bg_est, Bg_gt);
-                std::cout << "RMSE gravedad: " << rmse_gravity << " deg" << std::endl;
-                std::cout << "RMSE velocidad: " << rmse_velocity << " m/s"   << std::endl;
-                std::cout << "RMSE bias acc: " << rmse_bias_a     << " m/s^2" << std::endl;
-                std::cout << "RMSE bias gyr: " << rmse_bias_g     << " rad/s" << std::endl;
+            std::cout << "RMSE gravedad: " << rmse_gravity << " deg" << std::endl;
+            std::cout << "RMSE velocidad: " << rmse_velocity << " m/s"   << std::endl;
+            //std::cout << "RMSE bias acc: " << rmse_bias_a     << " m/s^2" << std::endl;
+            std::cout << "RMSE bias acc: " << rmse_bias_a_w     << " m/s^2" << std::endl;
+            std::cout << "RMSE bias gyr: " << rmse_bias_g     << " rad/s" << std::endl;
             ///// corroboramos que los errores siempre bajen
             historico_rmseG[n_frames] = rmse_gravity;
-            historico_rmseBA[n_frames] = rmse_bias_a;
+            historico_rmseBA[n_frames] = rmse_bias_a_w;
             historico_rmseV[n_frames] = rmse_velocity;
 
-            if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0  || (historico_rmseV[n_frames] - historico_rmseV[n_frames-1]) > 0.0 || (historico_rmseBA[n_frames] - historico_rmseBA[n_frames-1]) > 0.0 ){
+            //if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0  && (historico_rmseV[n_frames] - historico_rmseV[n_frames-1]) > 0.0 && (historico_rmseBA[n_frames] - historico_rmseBA[n_frames-1]) > 0.0 ){
+            if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0 ){
                 std::cout << "------- Solucion estable alcanzada en (" << n_frames-1 << ") frames -----"  << std::endl;
                 std::cout << "RMSE gravedad: " << historico_rmseG[n_frames-1] << " deg" << std::endl;
                 std::cout << "RMSE velocidad: " << historico_rmseV[n_frames-1] << " m/s"   << std::endl;

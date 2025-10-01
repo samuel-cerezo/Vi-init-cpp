@@ -8,7 +8,7 @@ void FeatureTracker::processFrame(const cv::Mat& image, int frame_idx, TrackMana
     if (prev_image_.empty()) {
         // First frame: detect initial features
         std::vector<cv::Point2f> keypoints;
-        cv::goodFeaturesToTrack(image, keypoints, max_corners_, quality_level_, min_distance_);
+        cv::goodFeaturesToTrack(image, keypoints, 20, quality_level_, min_distance_);
 
         for (const auto& kp : keypoints) {
             int id = track_manager.createTrack(frame_idx, Eigen::Vector2d(kp.x, kp.y));
@@ -48,11 +48,14 @@ void FeatureTracker::processFrame(const cv::Mat& image, int frame_idx, TrackMana
         new_track_ids.push_back(track_id);
     }
 
-    // Detectar nuevos puntos si el número bajó
-    if (new_points.size() < 0.8 * max_corners_) {
-        std::vector<cv::Point2f> detected;
-        cv::goodFeaturesToTrack(image, detected, max_corners_ - new_points.size(), quality_level_, min_distance_);
 
+    
+    // Detectar nuevos puntos si el número bajó
+    if (new_points.size() < 0.8 * 20) {
+        std::vector<cv::Point2f> detected;
+        int num_to_add = std::min(10, max_corners_ - (int)new_points.size());
+        cv::goodFeaturesToTrack(image, detected, num_to_add, quality_level_, min_distance_);
+        
         for (const auto& kp : detected) {
             int id = track_manager.createTrack(frame_idx, Eigen::Vector2d(kp.x, kp.y));
             new_points.push_back(kp);
