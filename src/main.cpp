@@ -28,11 +28,62 @@
 #include <Eigen/Geometry>
 #include <cmath>
 #include <sstream>
+#include <map>           // por si acaso
+#include <type_traits>   // std::remove_reference_t
+#include <unordered_map>
+
+
+template <typename Map, typename Key>
+inline auto try_at(Map& m, const Key& k)
+    -> typename Map::mapped_type*                  // puntero a mapped_type (no-const)
+{
+    auto it = m.find(k);
+    return (it == m.end()) ? nullptr : &it->second;
+}
+
+template <typename Map, typename Key>
+inline auto try_at(const Map& m, const Key& k)
+    -> const typename Map::mapped_type*            // puntero a mapped_type (const)
+{
+    auto it = m.find(k);
+    return (it == m.end()) ? nullptr : &it->second;
+}
+
+// p1, p2 en pixeles (cv::Point2f). Devuelve mediana del residual (px) tras compensar la rotación.
+double rotCompParallaxMedianPx(const std::vector<cv::Point2f>& pts1,
+                               const std::vector<cv::Point2f>& pts2,
+                               const Eigen::Matrix3d& K,
+                               const Eigen::Matrix3d& R_k_k1)
+{
+    // Construir H = K * R * K^{-1}
+    Eigen::Matrix3d H = K * R_k_k1 * K.inverse();
+
+    // Pasar a cv::Mat para usar perspectiveTransform
+    cv::Mat Hcv(3,3,CV_64F);
+    for(int r=0;r<3;++r) for(int c=0;c<3;++c) Hcv.at<double>(r,c) = H(r,c);
+
+    std::vector<cv::Point2f> pts1_warp;
+    cv::perspectiveTransform(pts1, pts1_warp, Hcv);
+
+    std::vector<double> resid;
+    resid.reserve(std::min(pts1.size(), pts2.size()));
+    for(size_t i=0;i<pts1_warp.size() && i<pts2.size();++i){
+        cv::Point2f d = pts2[i] - pts1_warp[i];
+        resid.push_back(std::hypot(d.x, d.y));
+    }
+    if(resid.empty()) return 0.0;
+
+    // Mediana
+    std::nth_element(resid.begin(), resid.begin()+resid.size()/2, resid.end());
+    return resid[resid.size()/2];
+}
+
 
 
 struct InitResult {
     int ref_idx; 
     int n_frames;
+    double t_frames;            // n_frames*t_cam
     Eigen::Vector3d gravity;   // gravedad
     Eigen::Vector3d velocity;    // velocity
     Eigen::Vector3d ba;        // bias acc
@@ -58,6 +109,7 @@ public:
     void append(const InitResult& r) {
         ofs_  << r.ref_idx << ","                 
               << r.n_frames << ","
+              << r.t_frames << ","
               << r.gravity.x() << "," << r.gravity.y() << "," << r.gravity.z() << ","
               << r.velocity.x()  << "," << r.velocity.y()  << "," << r.velocity.z()  << ","
               << r.ba.x()      << "," << r.ba.y()      << "," << r.ba.z()      << ","
@@ -74,6 +126,7 @@ private:
     void writeHeader() {
         ofs_ << "ref_idx,"         
              << "n_frames,"
+             << "t_frames,"
              << "g_w_x,g_w_y,g_w_z,"
              << "v_x,v_y,v_z,"
              << "ba_w_x,ba_w_y,ba_w_z,"
@@ -198,51 +251,79 @@ static inline double mean(std::vector<double> v){
 bool compute_translation_parallax_score(
         const cv::Mat& image1,
         const cv::Mat& image2,
-        const Matrix3d& K,
-        const Matrix3d& R_k_k1,
+        const Eigen::Matrix3d& K,
+        const Eigen::Matrix3d& R_k_k1,
         double& parallax_median_px,
-        int max_features = 800)
+        std::vector<cv::Point2f>& pts1_out,   // <-- salida
+        std::vector<cv::Point2f>& pts2_out)
 {
+    int max_features=1000;
+    // parámetros mínimos
+    const int    MIN_INLIERS = 20;
+    const double EPS_Z       = 1e-12;
 
-// detect corners in the first image
-std::vector<cv::Point2f> pts1;
-// Harris/Shi-Tomasi to obtain well-conditionated corners
-cv::goodFeaturesToTrack(image1, pts1, max_features, 0.01, 12.0, cv::Mat(), 3, false, 0.04);
-if (pts1.size() < 20) return false;
+    parallax_median_px = 0.0;
+    pts1_out.clear();
+    pts2_out.clear();
 
+    // Asegurar escala de grises
+    cv::Mat g1, g2;
+    if(image1.channels() == 1) g1 = image1; else cv::cvtColor(image1, g1, cv::COLOR_BGR2GRAY);
+    if(image2.channels() == 1) g2 = image2; else cv::cvtColor(image2, g2, cv::COLOR_BGR2GRAY);
 
-// track a image2 with Lucas-Kanade algorithm
-std::vector<cv::Point2f> pts2;
-std::vector<unsigned char> status;
-std::vector<float> err;
-cv::calcOpticalFlowPyrLK(
-  image1, image2, pts1, pts2, status, err,
-  cv::Size(21,21), 3,
-  cv::TermCriteria(cv::TermCriteria::COUNT|cv::TermCriteria::EPS, 30, 0.01),
-  0, 1e-4); // it gives me estimated position of pts1[i] in image2, status TRUE if succesfull
+    // 1) Detect corners en image1
+    std::vector<cv::Point2f> pts1;
+    cv::goodFeaturesToTrack(g1, pts1, max_features, /*quality*/0.01, /*minDist*/12.0,
+                            cv::Mat(), /*blockSize*/3, /*useHarris*/false, /*k*/0.04);
+    if (pts1.size() < (size_t)MIN_INLIERS) return false;
 
-std::vector<double> residuals;
-residuals.reserve(pts1.size());
+    // 2) Lucas–Kanade a image2
+    std::vector<cv::Point2f> pts2;
+    std::vector<unsigned char> status;
+    std::vector<float> err;
+    cv::calcOpticalFlowPyrLK(
+        g1, g2, pts1, pts2, status, err,
+        cv::Size(21,21), 3,
+        cv::TermCriteria(cv::TermCriteria::COUNT|cv::TermCriteria::EPS, 30, 0.01),
+        0, 1e-4);
 
-for (size_t i_c = 0; i_c < pts1.size(); ++i_c){
-    if(!status[i_c]) continue;
-    Vector3d x1_h(pts1[i_c].x, pts1[i_c].y, 1.0);   //hom coordinates in image1
-    Vector3d x2_h = K * R_k_k1.transpose() * K.inverse() * x1_h; // ray1=Kinv*x1 , then y rotate it. I project this ray with K, so i have the prediction in image2 without translation.
-    if(std::abs(x2_h.z()) < 1e-12) continue;
+    // 3) Residuales tras compensar la rotación: x2_hat = K * R^T * K^{-1} * x1_h
+    std::vector<double> residuals;
+    residuals.reserve(pts1.size());
+    pts1_out.reserve(pts1.size());
+    pts2_out.reserve(pts1.size());
 
-    Vector2d x2_hat(x2_h.x() / x2_h.z() , x2_h.y() / x2_h.z()); // from hom to normal. (u2​,v2​)=(x/w,y/w)
-    Vector2d x2_obs(pts2[i_c].x , pts2[i_c].y); //Lucas Kanade observation
+    Eigen::Matrix3d H = K * R_k_k1.transpose() * K.inverse();
 
-    double r = (x2_obs - x2_hat).norm(); //[px]
-    residuals.push_back(r);
-}
+    for (size_t i = 0; i < pts1.size(); ++i){
+        if(!status[i]) continue;
 
-if(residuals.size() < 20) return false;
+        // x1_h en homogéneas
+        Eigen::Vector3d x1_h(pts1[i].x, pts1[i].y, 1.0);
+        Eigen::Vector3d x2_h = H * x1_h;
 
-parallax_median_px = median(residuals); //returning median to improve robustness
+        if (std::abs(x2_h.z()) < EPS_Z) continue;
 
-return true;
+        Eigen::Vector2d x2_hat(x2_h.x() / x2_h.z(), x2_h.y() / x2_h.z());  // predicción sin traslación
+        Eigen::Vector2d x2_obs(pts2[i].x, pts2[i].y);                      // observación LK
 
+        double r = (x2_obs - x2_hat).norm(); // [px]
+        residuals.push_back(r);
+
+        // Guardamos SOLO las correspondencias para las que hemos podido calcular residual
+        pts1_out.push_back(pts1[i]);
+        pts2_out.push_back(pts2[i]);
+    }
+
+    if (residuals.size() < (size_t)MIN_INLIERS) {
+        pts1_out.clear();
+        pts2_out.clear();
+        return false;
+    }
+
+    parallax_median_px = median(residuals); // mediana robusta
+
+    return true;
 }
 
 //////////////////////// Formulacion de sistema de ecuaciones //////////////////////
@@ -372,8 +453,9 @@ inline std::string make_csv_basename(const std::string& seq_name, int ref_idx) {
     localtime_r(&t, &tm);
 #endif
     std::ostringstream oss;
-    oss << "results_" << seq_name
+    oss << "full_" << seq_name
         //<< "_ref" << ref_idx << "_"
+        << "_" 
         << (tm.tm_year + 1900)
         << std::setw(2) << std::setfill('0') << tm.tm_mon + 1
         << std::setw(2) << std::setfill('0') << tm.tm_mday << "_"
@@ -414,7 +496,6 @@ inline std::string make_project_results_path(const std::string& seq_input_path,
 
 
 
-
 /////////////////////////////////////////////////// main ////////////////////////////////////////////////////////
 
 int main(int argc, char** argv) {
@@ -442,6 +523,13 @@ int main(int argc, char** argv) {
         std::cerr << "Error loading EuRoC dataset." << std::endl;
         return -1;
     }
+
+    double delta_Tcam = 0.0;
+    if(tcam[2] && tcam[1]){
+        delta_Tcam = tcam[2]-tcam[1];
+    }
+    
+
     std::cerr << "Dataset loaded." << std::endl;
     // Load camera calibration
     std::string yaml_file = path_to_euroc_data + "/mav0/cam0/sensor.yaml";
@@ -487,15 +575,14 @@ int main(int argc, char** argv) {
 
     //    general parameters
 
+    std::string seq_name = infer_sequence_name(argv[1]);
+    CsvLogger logger(make_project_results_path(argv[1], seq_name, 0));
 
-    for(int ref_frame_idx = 1; ref_frame_idx < tcam.size(); ref_frame_idx += 250)
+    for(int ref_frame_idx = 1; ref_frame_idx < tcam.size()-10; ref_frame_idx += 10)
     {
 
         //int ref_frame_idx = 508;    //108
         
-        std::string seq_name = infer_sequence_name(argv[1]);
-        CsvLogger logger(make_project_results_path(argv[1], seq_name, ref_frame_idx));
-
 
         std::cout << "/// Processing frame " << ref_frame_idx << std::endl;
         double first_threshold = 45.0;  //45
@@ -512,11 +599,24 @@ int main(int argc, char** argv) {
 
         std::cout << "\nDetectando traslacion..." << std::endl;
 
-        double parallax_media_px, parallax_anterior;
+        double parallax_media_px = 0.0;            // FIX: inicializar
+        double parallax_anterior = 0.0;            // FIX: inicializar
+        // FIX: mover las ventanas fuera del loop para acumular historia
+
+        std::deque<double> win_parallax, win_rotcomp;
+        const int W = 6, M = 3;
+        const double ABS_PX = 6.0, SOFT_PX = 4.0, MIN_TX_PX = 1.2, REL_TH = 0.25;
+
 
         for (size_t trigg_disp = 0; trigg_disp  <= 20 ; ++trigg_disp){
-            id_threshold = trigg_disp;
-            int actual_frame = trigg_disp + ref_frame_idx;
+
+            id_threshold = (int)trigg_disp;
+            int actual_frame = (int)trigg_disp + ref_frame_idx;
+
+            // FIX: blindar límites (evita out-of-range en la última parte del dataset)
+            if (ref_frame_idx < 0 || ref_frame_idx >= (int)cam0_image_names.size()) break;
+            if (actual_frame + 1 >= (int)cam0_image_names.size()) break;
+
             const auto& img1_path = cam0_image_names[ref_frame_idx];
             const auto& img2_path = cam0_image_names[actual_frame + 1];
 
@@ -538,28 +638,68 @@ int main(int argc, char** argv) {
             const Eigen::Matrix3d& R_k_k1 = *R_k_k1_opt;    //reference to the value
             
         auto t0 = Clock::now();
-            double parallax_anterior = parallax_media_px;
-            bool criteria_achieved = compute_translation_parallax_score(image_1, image_2, K, R_k_k1, parallax_media_px);
+
+            std::vector<cv::Point2f> pts1, pts2;
+            bool criteria_achieved = compute_translation_parallax_score(
+                image_1, image_2, K, R_k_k1, parallax_media_px, pts1, pts2);
+
             auto t1 = Clock::now();
             double time_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+
+                        
             if(!criteria_achieved) continue;
 
             //std::cout << "[frame " << actual_frame << "->" << actual_frame+1
             //          << "] parallax_media_px = " << parallax_media_px << " px. Time: "<< time_ms <<" ms.\n";
+                // Parallax relativo robusto (ahora sí, con valores válidos)
             
-            double parallax_rel = 0.0;
-            if (parallax_anterior != 0.0) {
-                parallax_rel = std::abs(parallax_media_px - parallax_anterior) / parallax_anterior;
+            double parallax_rel = std::abs(parallax_media_px - parallax_anterior) /
+                                std::max(1e-6, std::abs(parallax_anterior));
+
+            
+            // --- Anti-rotación: parallax residual tras compensar R ---
+            
+            double parallax_rotcomp = rotCompParallaxMedianPx(pts1, pts2, K, R_k_k1);
+            
+            // Ventana (se mantiene entre iteraciones)
+            win_parallax.push_back(parallax_media_px);
+            win_rotcomp.push_back(parallax_rotcomp);
+            if((int)win_parallax.size() > W){
+                win_parallax.pop_front();
+                win_rotcomp.pop_front();
             }
             
+
             std::cout << parallax_media_px << std::endl;   //average of 7ms ..... para depurar el desplazamiento y triggering
             //std::cout << time_ms << std::endl; 
 
-            //if (parallax_media_px >= first_threshold) {
-            if(((parallax_rel >= first_threshold_rel) && (trigg_disp > 2)) || ((parallax_media_px >= first_threshold) && (trigg_disp > 2))){
+            if(trigg_disp <= 2) { parallax_anterior = parallax_media_px; continue; }
+
+            // --- Disparo HARD: frame actual suficientemente traslativo ---
+            bool hard_ok = (parallax_media_px >= ABS_PX) && (parallax_rotcomp >= MIN_TX_PX);
+            // --- Disparo SOFT: consenso en ventana ---
+            int cnt = 0;
+            for(int i=0;i<(int)win_parallax.size(); ++i)
+            if(win_parallax[i] >= SOFT_PX && win_rotcomp[i] >= MIN_TX_PX) cnt++;
+            bool soft_ok = (cnt >= M);
+
+            // --- Alternativa REL: cambio relativo suficiente + algo de traslación real ---
+            bool rel_ok = (parallax_rel >= REL_TH) && (parallax_rotcomp >= MIN_TX_PX);
+
+            if( (hard_ok || soft_ok || rel_ok) ){
                 std::cout << " - Criterio alcanzado en " << trigg_disp << " frames." << std::endl;
-                break; // the criteria is achieved
+                break;
             }
+
+            // Actualizar "anterior" al final de la iteración
+            parallax_anterior = parallax_media_px;
+
+            //if (parallax_media_px >= first_threshold) {
+            //if(((parallax_rel >= first_threshold_rel) && (trigg_disp > 2)) || ((parallax_media_px >= first_threshold) && (trigg_disp > 2))){
+            //    std::cout << " - Criterio alcanzado en " << trigg_disp << " frames." << std::endl;
+            //    break; // the criteria is achieved
+            //}
 
         }
 
@@ -788,10 +928,164 @@ int main(int argc, char** argv) {
 
             // -------- fin recorrido tracks (corregido) ----
 
+            // Construir el vector de tiempos t (t[0] = 0.0; luego las diferencias):
+            std::sort(keys_disponibles.begin(), keys_disponibles.end());
+            keys_disponibles.erase(
+                std::unique(keys_disponibles.begin(), keys_disponibles.end()),
+                keys_disponibles.end()
+            );
+
+            std::vector<double> t_vals;
+            t_vals.reserve(keys_disponibles.size());
+            t_vals.push_back(0.0); // t0
+
+            for (int key : keys_disponibles) {
+                // key = rel_j + 1; queremos Δt_j para cada columna existente
+                auto it = tj_map.find(key);
+                if (it == tj_map.end()) continue;
+                t_vals.push_back(it->second);
+            }
+
+            //-------------- correccion de codigo -----------------
+
+            // 1) Columnas efectivas: presentes en TODOS los mapas y con al menos una mu
+            std::vector<int> eff_cols;
+            eff_cols.reserve(Gamma_j_map.size());
+
+            // ¿tiene al menos una mu para esta columna?
+            auto has_mu_for_col = [&](int col)->bool{
+                for (const auto& kv : mu_ij_map){
+                    if (kv.first.second == col) return true; // {i, col}
+                }
+                return false;
+            };
+
+            // Candidatas: usa las keys de Gamma_j_map (podrías usar S_j_map o R_ij_map igualmente)
+            for (const auto& kv : Gamma_j_map){
+                int col = kv.first;
+                if (R_ij_map.find(col)==R_ij_map.end()) continue;
+                if (S_j_map.find(col)==S_j_map.end())   continue;
+                if (tj_map.find(col)==tj_map.end())     continue;
+                if (!has_mu_for_col(col))               continue;
+                eff_cols.push_back(col);
+            }
+
+            // Asegura que esté la columna de referencia (1) si existe en los mapas
+            if (std::find(eff_cols.begin(), eff_cols.end(), 1) == eff_cols.end()){
+                if (Gamma_j_map.count(1) && S_j_map.count(1) && R_ij_map.count(1) && tj_map.count(1) && has_mu_for_col(1))
+                    eff_cols.insert(eff_cols.begin(), 1);
+            }
+
+            // Ordenar por si vinieron desordenadas
+            std::sort(eff_cols.begin(), eff_cols.end());
+
+            // Si hay muy pocas columnas efectivas, sal con gracia
+            if (eff_cols.size() < 2){
+                std::cerr << "[WARN] Muy pocas columnas efectivas (size=" << eff_cols.size() << "). Saltando esta init.\n";
+                continue;
+            }
+
+            // 2) Reindexa a 1..C (col_real -> col_compacta)
+            std::unordered_map<int,int> col_index;
+            col_index.reserve(eff_cols.size());
+            int C = 0;
+            for(int col_real : eff_cols) col_index[col_real] = ++C;
+
+            // 3) Construye mapas compactos y vector de tiempos alineado
+            std::map<int, Eigen::Matrix3d> Gamma_comp;
+            std::map<int, Eigen::Vector3d> S_comp;
+            std::map<std::pair<int,int>, Eigen::Vector3d> mu_comp;
+            std::vector<double> t_vals_comp;  // tamaño = C, con t_vals_comp[0] = 0.0
+
+            Gamma_comp.clear(); S_comp.clear(); mu_comp.clear();
+            t_vals_comp.assign(C, 0.0); // t(1)=0.0 para la columna 1 compacta
+
+            for(int col_real : eff_cols){
+                int jc = col_index[col_real];
+
+                // Copia segura (ya sabemos que existen por haber filtrado eff_cols)
+                Gamma_comp[jc] = *try_at(Gamma_j_map, col_real);
+                S_comp[jc]     = *try_at(S_j_map,     col_real);
+
+                // tiempos: compacta; jc=1 (ref) -> 0.0; jc>=2 -> tj_map[col_real]
+                if (jc >= 2) {
+                    auto* tptr = try_at(tj_map, col_real);
+                    t_vals_comp[jc-1] = tptr ? *tptr : 0.0; // por seguridad, aunque debería existir
+                } else {
+                    t_vals_comp[0] = 0.0;
+                }
+            }
+
+            // Remapea mu_ij: (i, col_real) -> (i, jc)
+            for(const auto& kv : mu_ij_map){
+                int i_point  = kv.first.first;
+                int col_real = kv.first.second;
+                auto itc = col_index.find(col_real);
+                if(itc == col_index.end()) continue; // mu de columna descartada
+                int jc = itc->second;
+                mu_comp[{i_point, jc}] = kv.second;
+            }
+
+            // ================== /COMPACTACIÓN ==================
+            // ================== DENSIFICAR PUNTOS (i) ==================
+            // Requiere: eff_cols, col_index, mu_comp, Gamma_comp, S_comp, t_vals_comp
+
+            // 1) Elige puntos que tengan mu en TODAS las columnas compactas 1..C
+            std::vector<int> dense_points_orig; // índices de punto 'i' originales
+            dense_points_orig.reserve(N);
+
+            C = (int)Gamma_comp.size();               // columnas compactas (incluye ref=1)
+            auto has_all_cols = [&](int i_orig)->bool{
+                for (int jc = 1; jc <= C; ++jc){
+                    if (mu_comp.find({i_orig, jc}) == mu_comp.end()) return false;
+                }
+                return true;
+            };
+
+            // Nota: 'count_points' es cuántos puntos llegaste a cargar (1..count_points)
+            for (int i_orig = 1; i_orig <= (int)count_points; ++i_orig){
+                if (has_all_cols(i_orig)) {
+                    dense_points_orig.push_back(i_orig);
+                    if ((int)dense_points_orig.size() >= (int)N) break; // usa hasta N densos
+                }
+            }
+
+            if (dense_points_orig.size() < 3){
+                std::cerr << "[WARN] Demasiado pocos puntos densos ("
+                        << dense_points_orig.size() << "). Saltando esta init.\n";
+                continue;
+            }
+
+            // 2) Reindexa puntos densos a 1..N_eff y reconstruye mu_comp_dense
+            std::map<std::pair<int,int>, Eigen::Vector3d> mu_comp_dense;
+            mu_comp_dense.clear();
+
+            int N_eff = (int)dense_points_orig.size();
+            int i_new = 0;
+            for (int i_orig : dense_points_orig){
+                ++i_new; // 1..N_eff
+                for (int jc = 1; jc <= C; ++jc){
+                    auto it = mu_comp.find({i_orig, jc});
+                    // Debe existir por construcción:
+                    if (it == mu_comp.end()){
+                        // defensa extra: si no está, aborta esta init limpia
+                        std::cerr << "[WARN] Faltó mu para i=" << i_orig << " col=" << jc
+                                << " tras comprobar densidad. Skip.\n";
+                        i_new = 0; // marca invalidez
+                        break;
+                    }
+                    mu_comp_dense[{i_new, jc}] = it->second;
+                }
+                if (i_new == 0) break; // abortó por falta inesperada
+            }
+            if (i_new == 0) continue;
+
+            // (Opcional) Log útil
+            //std::cerr << "[DBG] C(cols)=" << C << ", N_eff(points)=" << N_eff << "\n";
 
 
 
-
+            //-----------------------------------------------------
 
             /*
             // ------------- recorremos tracks ------
@@ -923,27 +1217,6 @@ int main(int argc, char** argv) {
                 }
             }   
             // ----------  fin recorrido tracks
-            */
-
-            // Construir el vector de tiempos t (t[0] = 0.0; luego las diferencias):
-            std::sort(keys_disponibles.begin(), keys_disponibles.end());
-            keys_disponibles.erase(
-                std::unique(keys_disponibles.begin(), keys_disponibles.end()),
-                keys_disponibles.end()
-            );
-
-            std::vector<double> t_vals;
-            t_vals.reserve(keys_disponibles.size());
-            t_vals.push_back(0.0); // t0
-
-            for (int key : keys_disponibles) {
-                // key = rel_j + 1; queremos Δt_j para cada columna existente
-                auto it = tj_map.find(key);
-                if (it == tj_map.end()) continue;
-                t_vals.push_back(it->second);
-            }
-
-            /*
             //  ------ calculamos tvals 
             std::vector<double> t_vals;
             int m_detected = 0;
@@ -958,21 +1231,23 @@ int main(int argc, char** argv) {
             */
 
 
-
             // ---------- Resolver VINS con sesgo
             VISolution sol;
             double gravity_mag = 9.81; // o el valor que uses para la gravedad
+            if (solveVINSWithBias(Gamma_comp, S_comp, mu_comp_dense, t_vals_comp, gravity_mag, sol)) {
 
-            if (solveVINSWithBias(Gamma_j_map, S_j_map, mu_ij_map, t_vals, gravity_mag, sol)) {
-                std::cout << "------- Results with " << n_frames << " frames -------" << std::endl;
+                //if (solveVINSWithBias(Gamma_j_map, S_j_map, mu_ij_map, t_vals, gravity_mag, sol)) {
                 Eigen::Vector3d gravity = R0_gt*sol.gravity;
                 Eigen::Vector3d bias_acc = R0_gt*sol.bias;
-                //Eigen::Vector3d velocity_w = R0_gt*sol.velocity;  //da mayor
-                //std::cout << "Gravedad [f0]: " << sol.gravity.transpose() << std::endl;
-                std::cout << "Gravedad: " << gravity.transpose() << std::endl;    //world coordinates
-                std::cout << "Velocidad inicial: " << sol.velocity.transpose() << std::endl;
-                //std::cout << "ba estimado: " << sol.bias.transpose() << std::endl;
-                std::cout << "ba estimado: " << bias_acc.transpose() << std::endl;
+                ///////Eigen::Vector3d velocity_w = R0_gt*sol.velocity;  //da mayor
+                ///////////std::cout << "Gravedad [f0]: " << sol.gravity.transpose() << std::endl;
+                ///////////std::cout << "ba estimado: " << sol.bias.transpose() << std::endl;
+
+                //std::cout << "------- Results with " << n_frames << " frames -------" << std::endl;
+                //std::cout << "Gravedad: " << gravity.transpose() << std::endl;    //world coordinates
+                //std::cout << "Velocidad inicial: " << sol.velocity.transpose() << std::endl;
+                //std::cout << "ba estimado: " << bias_acc.transpose() << std::endl;
+
                 // Puedes recorrer sol.lambdas para obtener las escalas λ_i_j de cada característica
                 /*
                 for (const auto &kv : sol.lambdas) {
@@ -988,11 +1263,12 @@ int main(int argc, char** argv) {
                 //double rmse_bias_a     = rmse(sol.bias, Ba_gt);
                 double rmse_bias_a   = rmse(bias_acc,Ba_gt);
                 double rmse_bias_g     = rmse(bg_est, Bg_gt);
-                std::cout << "RMSE gravedad: " << rmse_gravity << " deg" << std::endl;
-                std::cout << "RMSE velocidad: " << rmse_velocity << " m/s"   << std::endl;
+                
+                //std::cout << "RMSE gravedad: " << rmse_gravity << " deg" << std::endl;
+                //std::cout << "RMSE velocidad: " << rmse_velocity << " m/s"   << std::endl;
+                //////std::cout << "RMSE bias acc: " << rmse_bias_a     << " m/s^2" << std::endl;
                 //std::cout << "RMSE bias acc: " << rmse_bias_a     << " m/s^2" << std::endl;
-                std::cout << "RMSE bias acc: " << rmse_bias_a     << " m/s^2" << std::endl;
-                std::cout << "RMSE bias gyr: " << rmse_bias_g     << " rad/s" << std::endl;
+                //std::cout << "RMSE bias gyr: " << rmse_bias_g     << " rad/s" << std::endl;
             
                 
                 
@@ -1005,11 +1281,11 @@ int main(int argc, char** argv) {
                 if (n_frames > id_threshold) {
                     if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0 ){
                         int trigg_hessian = n_frames-1;
-                        std::cout << "------- Solucion estable alcanzada en (" << trigg_hessian << ") frames -----"  << std::endl;
-                        std::cout << "RMSE gravedad: " << historico_rmseG[trigg_hessian] << " deg" << std::endl;
-                        std::cout << "RMSE velocidad: " << historico_rmseV[trigg_hessian] << " m/s"   << std::endl;
-                        std::cout << "RMSE bias acc: " << historico_rmseBA[trigg_hessian]     << " m/s^2" << std::endl;
-                        std::cout << "RMSE bias gyr: " << rmse_bias_g  << " rad/s" << std::endl;
+                        //std::cout << "------- Solucion estable alcanzada en (" << trigg_hessian << ") frames -----"  << std::endl;
+                        //std::cout << "RMSE gravedad: " << historico_rmseG[trigg_hessian] << " deg" << std::endl;
+                        //std::cout << "RMSE velocidad: " << historico_rmseV[trigg_hessian] << " m/s"   << std::endl;
+                        //std::cout << "RMSE bias acc: " << historico_rmseBA[trigg_hessian]     << " m/s^2" << std::endl;
+                        //std::cout << "RMSE bias gyr: " << rmse_bias_g  << " rad/s" << std::endl;
                         break;
                     }
                 }
@@ -1018,6 +1294,7 @@ int main(int argc, char** argv) {
                 InitResult row_ok;
                 row_ok.ref_idx      = ref_frame_idx;                     
                 row_ok.n_frames     = static_cast<int>(n_frames);
+                row_ok.t_frames     = n_frames*delta_Tcam;
                 row_ok.gravity      = gravity;
                 row_ok.velocity     = sol.velocity;
                 row_ok.ba           = bias_acc;

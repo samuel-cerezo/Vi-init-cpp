@@ -55,3 +55,6 @@ target_link_libraries(vi_init
     ${PYTHON_LIBRARY}
     ${CERES_LIBRARIES}
 )
+
+# modo debug
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address,undefined -fno-omit-frame-pointer")
