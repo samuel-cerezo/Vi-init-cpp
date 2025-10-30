@@ -10,8 +10,7 @@
 </p>
 
 
-This repository provides a C++ implementation of a **fully closed-form visual-inertial initialization algorithm**, based on the following article: - [VI-init](https://samuel-cerezo.github.io/vi-init).
-
+This repository provides a C++ implementation of a **fully closed-form visual-inertial initialization algorithm**.
 ## ✨ Features
 
 - Closed-form gyroscope bias estimation from two-view visual correspondences and IMU preintegration
