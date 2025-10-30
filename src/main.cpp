@@ -152,12 +152,12 @@ void preprocessAllTracks(
     FeatureTracker& tracker,
     TrackManager& track_manager)
 {
-    std::cout << "[PREPROCESS] Procesando todas las imágenes..." << std::endl;
+    std::cout << "[PREPROCESS] Processing..." << std::endl;
     for (int i = 0; i < cam0_image_names.size(); ++i) {
         cv::Mat image = cv::imread(cam0_image_names[i], cv::IMREAD_GRAYSCALE);
         tracker.processFrame(image, i, track_manager);
     }
-    std::cout << "[PREPROCESS] Tracks completos almacenados en TrackManager." << std::endl;
+    std::cout << "[PREPROCESS] Tracks completed almacenados en TrackManager." << std::endl;
 }
 
 std::vector<PointTrack> selectTracksForInit(
@@ -271,6 +271,7 @@ bool compute_translation_parallax_score(
     if(image1.channels() == 1) g1 = image1; else cv::cvtColor(image1, g1, cv::COLOR_BGR2GRAY);
     if(image2.channels() == 1) g2 = image2; else cv::cvtColor(image2, g2, cv::COLOR_BGR2GRAY);
 
+    auto t0_condition1 = Clock::now();
     // 1) Detect corners en image1
     std::vector<cv::Point2f> pts1;
     cv::goodFeaturesToTrack(g1, pts1, max_features, /*quality*/0.01, /*minDist*/12.0,
@@ -286,7 +287,8 @@ bool compute_translation_parallax_score(
         cv::Size(21,21), 3,
         cv::TermCriteria(cv::TermCriteria::COUNT|cv::TermCriteria::EPS, 30, 0.01),
         0, 1e-4);
-
+    auto t1_condition1 = Clock::now();
+    double time_cond1 = std::chrono::duration<double, std::milli>(t1_condition1 - t0_condition1).count();
     // 3) Residuales tras compensar la rotación: x2_hat = K * R^T * K^{-1} * x1_h
     std::vector<double> residuals;
     residuals.reserve(pts1.size());
@@ -296,6 +298,7 @@ bool compute_translation_parallax_score(
     Eigen::Matrix3d H = K * R_k_k1.transpose() * K.inverse();
 
     for (size_t i = 0; i < pts1.size(); ++i){
+
         if(!status[i]) continue;
 
         // x1_h en homogéneas
@@ -415,6 +418,36 @@ bool solveVINSWithBias(
         X = svd.solve(b);
     }
 
+    //  Hessian analysis
+
+    Eigen::MatrixXd Hess = Xi.transpose() * Xi;
+    Eigen::VectorXd gss = Xi.transpose() * b;
+    const int nx = 9;
+    const int Kss  = Xi.cols() - nx;
+    Eigen::MatrixXd Ass  = Hess.topLeftCorner(nx, nx);
+    Eigen::MatrixXd Jss  = Hess.topRightCorner(nx, Kss);
+    Eigen::MatrixXd Lss  = Hess.bottomRightCorner(Kss, Kss);
+    Eigen::VectorXd bxss = gss.head(nx);
+    Eigen::VectorXd blss = gss.tail(Kss);
+    Eigen::MatrixXd L_reg = Lss;
+    L_reg.diagonal().array() += 1e-9;
+    Eigen::LDLT<Eigen::MatrixXd> ldltL(L_reg);
+    Eigen::MatrixXd V_Li_Jt = ldltL.solve(Jss.transpose()); // Kx9
+    Eigen::VectorXd y_Li_bl = ldltL.solve(blss);            // K
+    Eigen::MatrixXd Hs = Ass - Jss * V_Li_Jt;                 // 9x9
+    Eigen::VectorXd gs = bxss - Jss * y_Li_bl;                // 9
+    Eigen::VectorXd x(nx);
+    Eigen::LDLT<Eigen::MatrixXd> ldltHs(Hs);
+    if (ldltHs.info() == Eigen::Success) {
+        x = ldltHs.solve(gs);
+    } else {
+        Eigen::JacobiSVD<Eigen::MatrixXd> svdHs(Hs, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        Eigen::VectorXd Sinv = svdHs.singularValues()
+            .unaryExpr([](double s){ return (s > 1e-12) ? 1.0/s : 0.0; });
+        x = svdHs.matrixV() * Sinv.asDiagonal() * svdHs.matrixU().transpose() * gs;
+    }
+
+    
     // Extraer G, V, B y normalizar gravedad
     Eigen::Vector3d G = X.segment<3>(0);
     Eigen::Vector3d V = X.segment<3>(3);
@@ -545,62 +578,35 @@ int main(int argc, char** argv) {
     preprocessAllTracks(cam0_image_names, tracker, track_manager);  //preproceso todas las imagenes
 
 
-
-
-    /*
-    // results folder
-    std::filesystem::path results_dir = std::filesystem::path("../results");
-    if (!std::filesystem::exists(results_dir)) {
-        std::filesystem::create_directories(results_dir);
-    }
-    
-    // Open log file
-    std::filesystem::path dataset_path(path_to_euroc_data);
-    std::string dataset_name = dataset_path.filename().string();  // e.g., "MH_02"
-    std::string output_filename = results_dir / ("results_" + dataset_name + ".csv");
-    std::ofstream log_bias_file(output_filename, std::ios::out);
-    log_bias_file << "frame,error_small,elapsed_small_us,error_opt,elapsed_opt_us,error_constVel,elapsed_consVel_us\n";
-    */
-
-    
-    // Frame-by-frame processing --> bg estimation and comparison. The result is saved in a CSV format, in results folder.
-    
-    /*
-    for (int frame = starting_frame_; frame < 30; frame += 5) {
-    //for (int frame = starting_frame_; frame < cam0_image_names.size() - 1; frame += 10) {
-        process_frame_pair(frame, cam0_image_names, tcam, timu, omega, acc, 4999936e-9,
-                           tgt, qgt, bg_gt, ba_gt, v_gt, g_gt, p_gt, K, K_cv, dist_cv, tbodycam, tbodyimu, log_bias_file);
-    }
-    */
-
     //    general parameters
 
     std::string seq_name = infer_sequence_name(argv[1]);
     CsvLogger logger(make_project_results_path(argv[1], seq_name, 0));
 
-    for(int ref_frame_idx = 1; ref_frame_idx < tcam.size()-10; ref_frame_idx += 10)
-    {
+    for(int ref_frame_idx = 1; ref_frame_idx < tcam.size()-10; ref_frame_idx += 10){
+    //for(int ref_frame_idx = 1; ref_frame_idx < 200; ref_frame_idx += 25){
 
         //int ref_frame_idx = 508;    //108
-        
 
-        std::cout << "/// Processing frame " << ref_frame_idx << std::endl;
+        //std::cout << "/// Processing frame " << ref_frame_idx << std::endl;
+        bool stability=false;
+
         double first_threshold = 45.0;  //45
         double first_threshold_rel = 0.7;  //0.7
         int id_threshold = 0;
         size_t N = 7;  //number of features. 11
         double ratio_new=0;
-        int MAX_FRAMES = 12;
+        int MAX_FRAMES = 25;
         std::map<int, double> deriv_ratio;
         std::map<int, double> times_deriv;
         deriv_ratio[1] = 100.0;
         times_deriv[1] = 0.0;
         int gt_starting_frame_ = 0;
 
-        std::cout << "\nDetectando traslacion..." << std::endl;
+        std::cout << "\nDetecting translation..." << std::endl;
 
-        double parallax_media_px = 0.0;            // FIX: inicializar
-        double parallax_anterior = 0.0;            // FIX: inicializar
+        double parallax_media_px = 0.0;            
+        double parallax_anterior = 0.0;            
         // FIX: mover las ventanas fuera del loop para acumular historia
 
         std::deque<double> win_parallax, win_rotcomp;
@@ -649,20 +655,14 @@ int main(int argc, char** argv) {
 
                         
             if(!criteria_achieved) continue;
-
-            //std::cout << "[frame " << actual_frame << "->" << actual_frame+1
-            //          << "] parallax_media_px = " << parallax_media_px << " px. Time: "<< time_ms <<" ms.\n";
-                // Parallax relativo robusto (ahora sí, con valores válidos)
             
             double parallax_rel = std::abs(parallax_media_px - parallax_anterior) /
                                 std::max(1e-6, std::abs(parallax_anterior));
 
             
-            // --- Anti-rotación: parallax residual tras compensar R ---
             
             double parallax_rotcomp = rotCompParallaxMedianPx(pts1, pts2, K, R_k_k1);
             
-            // Ventana (se mantiene entre iteraciones)
             win_parallax.push_back(parallax_media_px);
             win_rotcomp.push_back(parallax_rotcomp);
             if((int)win_parallax.size() > W){
@@ -671,24 +671,19 @@ int main(int argc, char** argv) {
             }
             
 
-            std::cout << parallax_media_px << std::endl;   //average of 7ms ..... para depurar el desplazamiento y triggering
-            //std::cout << time_ms << std::endl; 
+            //std::cout << parallax_media_px << std::endl;   
 
             if(trigg_disp <= 2) { parallax_anterior = parallax_media_px; continue; }
 
-            // --- Disparo HARD: frame actual suficientemente traslativo ---
             bool hard_ok = (parallax_media_px >= ABS_PX) && (parallax_rotcomp >= MIN_TX_PX);
-            // --- Disparo SOFT: consenso en ventana ---
             int cnt = 0;
             for(int i=0;i<(int)win_parallax.size(); ++i)
             if(win_parallax[i] >= SOFT_PX && win_rotcomp[i] >= MIN_TX_PX) cnt++;
             bool soft_ok = (cnt >= M);
-
-            // --- Alternativa REL: cambio relativo suficiente + algo de traslación real ---
             bool rel_ok = (parallax_rel >= REL_TH) && (parallax_rotcomp >= MIN_TX_PX);
 
             if( (hard_ok || soft_ok || rel_ok) ){
-                std::cout << " - Criterio alcanzado en " << trigg_disp << " frames." << std::endl;
+            //    std::cout << " - Criteria achieved in " << trigg_disp << " frames." << std::endl;
                 break;
             }
 
@@ -780,6 +775,7 @@ int main(int argc, char** argv) {
         Eigen::Matrix3d R0_gt = quatToRot(qgt[gt_starting_frame_]);
         
         std::map<int, double> historico_rmseG, historico_rmseBA, historico_rmseV;
+        std::map<int, Vector3d> historicoG, historicoB, historicoV;
         historico_rmseG[id_threshold-1] = 999;
         historico_rmseBA[id_threshold-1] = 999;
         historico_rmseV[id_threshold-1] = 999;
@@ -787,6 +783,16 @@ int main(int argc, char** argv) {
         historico_rmseBA[id_threshold] = 999;
         historico_rmseV[id_threshold] = 999;    
 
+        const Vector3d big = Vector3d::Constant(999.0);
+        // Asignación en std::map<int, Vector3d>
+        if (id_threshold >= 1) {
+            historicoG[id_threshold - 1] = big;
+            historicoB[id_threshold - 1] = big;
+            historicoV[id_threshold - 1] = big;
+        }
+        historicoG[id_threshold] = big;
+        historicoB[id_threshold] = big;
+        historicoV[id_threshold] = big;
 
         for (size_t n_frames=id_threshold; n_frames <= MAX_FRAMES; ++n_frames){
 
@@ -887,7 +893,7 @@ int main(int argc, char** argv) {
             for (const auto& track : valid_tracks) {
                 if (!track.hasObservation(ref_frame_idx)) continue;
                 ++count_points;
-                if (count_points > N) { std::cout << "All N points processed.\n"; break; }
+                if (count_points > N) { break; }
 
                 int i = (int)count_points; // id compacto del punto
                 size_t usados = 0;
@@ -922,7 +928,7 @@ int main(int argc, char** argv) {
                     mu_ij_map[{i, key}] = mu_ij;
 
                     // límite por frames efectivos por punto (opcional)
-                    if (++usados >= n_frames) break;
+                    //if (++usados >= n_frames) break;
                 }
             }
 
@@ -1051,8 +1057,8 @@ int main(int argc, char** argv) {
             }
 
             if (dense_points_orig.size() < 3){
-                std::cerr << "[WARN] Demasiado pocos puntos densos ("
-                        << dense_points_orig.size() << "). Saltando esta init.\n";
+                //std::cerr << "[WARN] Demasiado pocos puntos densos ("
+                //        << dense_points_orig.size() << "). Saltando esta init.\n";
                 continue;
             }
 
@@ -1080,158 +1086,6 @@ int main(int argc, char** argv) {
             }
             if (i_new == 0) continue;
 
-            // (Opcional) Log útil
-            //std::cerr << "[DBG] C(cols)=" << C << ", N_eff(points)=" << N_eff << "\n";
-
-
-
-            //-----------------------------------------------------
-
-            /*
-            // ------------- recorremos tracks ------
-            for (const auto& track : valid_tracks) {
-                if (!track.hasObservation(ref_frame_idx)) continue;
-                count_points++;
-
-                if(count_points > N){
-                    std::cout << "All N points processed." << std::endl;
-                    break;
-                }
-
-                //std::cout << "Punto " << count_points << " en proceso." << std::endl;
-
-                
-                count_frames = 0;
-                for (const auto& obs : track.observations) {
-                    int j = obs.frame_idx - ref_frame_idx;      //frame donde el punto caracteristico es visto
-                    int i = count_points;                       //identificacion del punto en cuestion (track.id pero normalizado)
-                    Vector2d uv = obs.uv;
-                    //std::cout << "uv: " << uv.transpose() << std::endl;
-
-                    if (j < 0) continue;
-                    
-                    if(j==0){
-                        Vector3d mu_1 = computeMuFromUV(uv, K);
-                        if (mu_1.norm() < 1e-5) {
-                            std::cerr << "[WARN] mu_j casi nulo para j = " << j << std::endl;
-                            continue;
-                        }
-                        mu_ij_map[{i, 1}] = mu_1;
-                        //std::cout << "mu_1: " << mu_1.transpose()<< std::endl;
-                        continue;
-                    }
-                    
-
-                    count_frames++;
-                    if (count_frames > n_frames) break;
-
-                // std::cout << "i=" << i << " j=" << j << std::endl;
-
-                    // === 1. Rotación R_ij usando C2P ===
-                    //auto Ropt = compute_Rij_with_c2p(
-                    //    cam0_image_names[ref_frame_idx],
-                    //    cam0_image_names[obs.frame_idx],
-                    //    K, K_cv, dist_cv);
-                    //if (!Ropt) {
-                    //    std::cerr << "[C2P] Fallo al calcular R_ij para j = " << j+1 << std::endl;
-                    //    continue;
-                    //}
-                    //Matrix3d R_ij = *Ropt;
-                    //R_ij_map[{i, j+1}] = R_ij;         // no estoy seguro si necesita multiplicarse por la matrix extrinseca.
-                    ////std::cout << "R_ij: " << R_ij << std::endl;
-                    
-
-                    if(count_points == 1){
-                        // === 2. Intervalo temporal ===
-                        double t1 = tcam[ref_frame_idx];
-                        double t2 = tcam[obs.frame_idx];
-                        tj_map[j+1] = t2 - t1;
-                       // std::cout << "[DEBUG] 2" << std::endl;
-
-                        // === 3. Extraer segmento IMU ===
-                        std::vector<Vector3d> omega_seg, acc_seg;
-                        std::vector<double> dts;
-                        for (size_t ii = 1; ii < timu.size(); ++ii) {
-                           // std::cout << "[DEBUG] 3" << std::endl;
-                            if (timu[ii - 1] < t2 && timu[ii] > t1) {
-                                double dt_imu = timu[ii] - timu[ii - 1];
-                                omega_seg.push_back(omega[ii - 1]);
-                                acc_seg.push_back(acc[ii - 1]);
-                                dts.push_back(dt_imu);
-                            }
-                        }
-
-                        if (dts.empty()) {
-                            std::cerr << "[IMU] Sin muestras entre t1 = " << t1 << " y t2 = " << t2 << std::endl;
-                            continue;
-                        }
-                        
-                        //std::cout << "datos de IMU cargados exitosamente." << t1 << std::endl;
-
-                        // === 4. Integración de Gamma y S ===
-                        Matrix3d R_ij = Matrix3d::Identity();
-                        Matrix3d Gamma = Matrix3d::Zero();
-                        Vector3d S = Vector3d::Zero();
-
-                        double tau_k = t1;
-                        
-                        for (size_t k = 0; k < dts.size(); ++k) {
-                          //  std::cout << "[DEBUG] 4" << std::endl;
-                            double dt = dts[k];
-                            tau_k += dt;
-                            double weight = t2 - tau_k;
-                            if (weight < 0) continue;
-                            R_ij *= lie::ExpMap((omega_seg[k] - bg_est) * dt);
-                            Gamma += weight * R_ij * dt;
-                            S     += weight * R_ij * acc_seg[k] * dt;
-                        }
-                       // std::cout << "[DEBUG] 5" << std::endl;
-
-                        R_ij_map[j+1] = R_ij;
-                        Gamma_j_map[j+1] = Gamma;
-                        S_j_map[j+1] = S;
-                    }
-
-                    // === 5. Calcular mu_ij ===
-                    if (!track.hasObservation(j)) {
-                        std::cerr << "[ERROR] Observation j = " << j+1 << " not found in track.observations!" << std::endl;
-                        continue;
-                    }
-
-                    //Vector2d uv_j = track.observations.at(j).uv;
-                    Vector3d mu_j = computeMuFromUV(uv, K);
-
-                    if (mu_j.norm() < 1e-5) {
-                        std::cerr << "[WARN] mu_j casi nulo para j = " << j << std::endl;
-                        continue;
-                    }
-                  //  std::cout << "[DEBUG] 6" << std::endl;
-
-                    Vector3d mu_ij = R_ij_map[j+1] * mu_j;
-                    mu_ij_map[{i, j+1}] = mu_ij;
-                    //std::cout << "mu_ij: " << mu_ij.transpose()<< std::endl;
-
-
-                    // === Log por cada par (i, j) ===
-                    //std::cout << "j = " << j+1 << " — Δt: " << tj_map[j+1] << " — mu_ij.norm = " << mu_ij.norm() << std::endl;
-                }
-            }   
-            // ----------  fin recorrido tracks
-            //  ------ calculamos tvals 
-            std::vector<double> t_vals;
-            int m_detected = 0;
-            t_vals.push_back(0.0); // t0 = 0
-            for (const auto &kv : tj_map) {
-                // kv.first corresponde al índice j+1 y kv.second a Δt
-                if (kv.first > 1) {
-                    t_vals.push_back(kv.second);
-                    ++m_detected;
-                }
-            }
-            */
-
-
-            // ---------- Resolver VINS con sesgo
             VISolution sol;
             double gravity_mag = 9.81; // o el valor que uses para la gravedad
             if (solveVINSWithBias(Gamma_comp, S_comp, mu_comp_dense, t_vals_comp, gravity_mag, sol)) {
@@ -1239,24 +1093,9 @@ int main(int argc, char** argv) {
                 //if (solveVINSWithBias(Gamma_j_map, S_j_map, mu_ij_map, t_vals, gravity_mag, sol)) {
                 Eigen::Vector3d gravity = R0_gt*sol.gravity;
                 Eigen::Vector3d bias_acc = R0_gt*sol.bias;
-                ///////Eigen::Vector3d velocity_w = R0_gt*sol.velocity;  //da mayor
-                ///////////std::cout << "Gravedad [f0]: " << sol.gravity.transpose() << std::endl;
-                ///////////std::cout << "ba estimado: " << sol.bias.transpose() << std::endl;
+                std::cout << "Solution: " << std::endl;
+                std::cout << "G: " << gravity.transpose() << "\nBa: " << bias_acc.transpose() << "\nBg: " << bg_est.transpose() << std::endl;
 
-                //std::cout << "------- Results with " << n_frames << " frames -------" << std::endl;
-                //std::cout << "Gravedad: " << gravity.transpose() << std::endl;    //world coordinates
-                //std::cout << "Velocidad inicial: " << sol.velocity.transpose() << std::endl;
-                //std::cout << "ba estimado: " << bias_acc.transpose() << std::endl;
-
-                // Puedes recorrer sol.lambdas para obtener las escalas λ_i_j de cada característica
-                /*
-                for (const auto &kv : sol.lambdas) {
-                    int i = kv.first.first;
-                    int j = kv.first.second;
-                    double lambda_ij = kv.second;
-                    std::cout << "λ(" << i << "," << j << ") = " << lambda_ij << std::endl;
-                }
-                */
                 //-----------  Errores RMSE ---------
                 double rmse_gravity = rmse_ang(gravity, G_gt);
                 double rmse_velocity = rmse(sol.velocity, V0_gt);
@@ -1264,200 +1103,21 @@ int main(int argc, char** argv) {
                 double rmse_bias_a   = rmse(bias_acc,Ba_gt);
                 double rmse_bias_g     = rmse(bg_est, Bg_gt);
                 
-                //std::cout << "RMSE gravedad: " << rmse_gravity << " deg" << std::endl;
-                //std::cout << "RMSE velocidad: " << rmse_velocity << " m/s"   << std::endl;
-                //////std::cout << "RMSE bias acc: " << rmse_bias_a     << " m/s^2" << std::endl;
-                //std::cout << "RMSE bias acc: " << rmse_bias_a     << " m/s^2" << std::endl;
-                //std::cout << "RMSE bias gyr: " << rmse_bias_g     << " rad/s" << std::endl;
+                
             
-                
-                
                 ///// corroboramos que los errores siempre bajen
                 historico_rmseG[n_frames] = rmse_gravity;
                 historico_rmseBA[n_frames] = rmse_bias_a;
                 historico_rmseV[n_frames] = rmse_velocity;
-
-                //if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0  && (historico_rmseV[n_frames] - historico_rmseV[n_frames-1]) > 0.0 && (historico_rmseBA[n_frames] - historico_rmseBA[n_frames-1]) > 0.0 ){
-                if (n_frames > id_threshold) {
-                    if((historico_rmseG[n_frames] - historico_rmseG[n_frames-1]) > 0.0 ){
-                        int trigg_hessian = n_frames-1;
-                        //std::cout << "------- Solucion estable alcanzada en (" << trigg_hessian << ") frames -----"  << std::endl;
-                        //std::cout << "RMSE gravedad: " << historico_rmseG[trigg_hessian] << " deg" << std::endl;
-                        //std::cout << "RMSE velocidad: " << historico_rmseV[trigg_hessian] << " m/s"   << std::endl;
-                        //std::cout << "RMSE bias acc: " << historico_rmseBA[trigg_hessian]     << " m/s^2" << std::endl;
-                        //std::cout << "RMSE bias gyr: " << rmse_bias_g  << " rad/s" << std::endl;
-                        break;
-                    }
-                }
-                
-                // ---- CSV: guardar fila "OK"
-                InitResult row_ok;
-                row_ok.ref_idx      = ref_frame_idx;                     
-                row_ok.n_frames     = static_cast<int>(n_frames);
-                row_ok.t_frames     = n_frames*delta_Tcam;
-                row_ok.gravity      = gravity;
-                row_ok.velocity     = sol.velocity;
-                row_ok.ba           = bias_acc;
-                row_ok.rmse_g_deg   = rmse_gravity;
-                row_ok.rmse_v_ms    = rmse_velocity;
-                row_ok.rmse_ba_ms2  = rmse_bias_a;
-                row_ok.rmse_bg_rads = rmse_bias_g;
-                row_ok.status       = "OK";
-                logger.append(row_ok);
+                historicoG[n_frames] = gravity;
+                historicoB[n_frames] = bias_acc;
+                historicoV[n_frames] = sol.velocity;
 
             } else {
-                std::cerr << "[Solver] No se pudo resolver el sistema visual-inercial." << std::endl;
+                std::cerr << "[Solver] Solution not achieved ." << std::endl;
             }
         }
     // proceso siguiente frame
     }      
     return 0;
 }
-
-
-
-
-
-
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-        /*
-        // -------------------------------  Building the equation system  -----------------------
-        auto t0 = Clock::now();
-
-        // Dimensiones
-        int num_equations = 3 * (n_frames - 1) * (N);       // 3 filas por (i,j)
-        int num_unknowns = 9 + N * n_frames;
-
-        // Matrices del sistema
-        MatrixXd Xi = MatrixXd::Zero(num_equations, num_unknowns);
-        VectorXd S = VectorXd::Zero(num_equations);
-
-        // Índice para cada lambda_j^i
-        auto lambda_index = [N, n_frames](int i, int j) {
-            return 9 + (i-1) * n_frames + (j-1);
-        };
-
-        // Construcción del sistema
-        int row = 0;
-        for (int j = 2; j <= n_frames; ++j) {
-            S.segment<3>(row) = S_j_map.at(j);  //S_j_map[j]
-
-            for (int i = 1; i <= N; ++i) {
-
-                double tj = tj_map[j];
-
-                // ======= Primera ecuación (vector S_j) =======
-                Xi.block<3,3>(row, 0) = -(tj * tj / 2.0) * Matrix3d::Identity();    // Gravity
-                Xi.block<3,3>(row, 3) = -tj * Matrix3d::Identity();                 // Velocity
-                Xi.block<3,3>(row, 6) = Gamma_j_map[j];                             // Accel Bias
-
-                Xi.block<3,1>(row, lambda_index(i, 1)) = mu_ij_map.at(std::make_pair(i, 1));
-                Xi.block<3,1>(row, lambda_index(i, j)) = -mu_ij_map.at(std::make_pair(i, j));
-            
-                //Xi.block<3,1>(row, lambda_index(i, 1)) = mu_ij_map[{i, 1}];
-                //Xi.block<3,1>(row, lambda_index(i, j)) = -mu_ij_map[{i, j}];
-
-                // row += 3;
-                // ======= Segunda ecuación (0 vector) =======
-                // Xi.block<3,1>(row, lambda_index(1, 1)) = mu_ij_map[{1, 1}];
-                // Xi.block<3,1>(row, lambda_index(1, j)) = -mu_ij_map[{1, j}];
-                // Xi.block<3,1>(row, lambda_index(i, 1)) = -mu_ij_map[{i, 1}];
-                // Xi.block<3,1>(row, lambda_index(i, j)) = mu_ij_map[{i, j}];
-
-                row += 3;
-            }
-        }
-        */
-        // Sanidad: debe cumplirse
-        //assert(row == Xi.rows());
-        /*
-        JacobiSVD<MatrixXd> svd(Xi, ComputeThinU | ComputeThinV);
-        // Opcional: estimar el rango numérico con tolerancia
-        double tol = 1e-8 * std::max(Xi.rows(), Xi.cols()) * svd.singularValues()(0);
-        int rank = (svd.singularValues().array() > tol).count();
-        std::cout << "Rango numérico estimado antes: " << rank << " / " << Xi.cols() << std::endl;
-        
-
-        VectorXd X = svd.solve(S);
-
-        Vector3d g_est = X.segment<3>(0);
-        Vector3d v_est = X.segment<3>(3);
-        Vector3d ba_est = X.segment<3>(6);
-
-        std::cout << "=== Solution achieved ===\n";
-        std::cout << "Gravity: " << g_est.transpose() << "\n";
-        std::cout << "Velocity: " << v_est.transpose() << "\n";
-        std::cout << "Bias acc: " << ba_est.transpose() << "\n";
-
-        //std::cout << "\n=== lambda_j^i ===" << std::endl;
-        for (int i = 1; i <= N; ++i) {
-            for (int j = 1; j <= n_frames; ++j) {
-                int idx = 9 + (i - 1) * n_frames + (j - 1);
-                double lambda = X(idx);
-                //std::cout << "lambda[" << i << "][" << j << "] = " << lambda << std::endl;
-            }
-        }
-        */
-
-        
-        /*
-
-        // observability test
-
-        MatrixXd H = Xi.transpose() * Xi;  // si tienes pesos, usa A = W12 * Xi; H = A.transpose()*A
-
-        int nx = 9;
-        int nl = Xi.cols() - nx;
-
-        MatrixXd Hxx = H.topLeftCorner(nx, nx);
-        MatrixXd HxL = H.topRightCorner(nx, nl);
-        MatrixXd HLx = H.bottomLeftCorner(nl, nx);
-        MatrixXd HLL = H.bottomRightCorner(nl, nl);
-
-        // Resuelve HLL * X = HLx con LLT/LDLT (HLL es SPD)
-        Eigen::LDLT<MatrixXd> ldlt(HLL);
-        MatrixXd Sx = Hxx - HxL * ldlt.solve(HLx);
-
-        // Espectro de la info marginal
-        SelfAdjointEigenSolver<MatrixXd> esS(Sx);
-        VectorXd lam = esS.eigenvalues();       // ascendente (>=0 si todo bien)
-        double smin = std::sqrt(std::max(0.0, lam(0)));
-        double smax = std::sqrt(std::max(0.0, lam(lam.size()-1)));
-        double ratio_old = ratio_new;
-        ratio_new = (smax!=0)? smin/smax : 0.0;
-        deriv_ratio[n_frames] = (ratio_old!=0)? std::abs((ratio_new - ratio_old)/(ratio_old)) : 100.0;
-        
-        auto t1 = Clock::now();
-        double time_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        times_deriv[n_frames] = time_ms;
-
-        std::cout << "["<< n_frames << " frames] " << "sigma_min=" << smin << " sigma_max=" << smax
-                << " ratio=" << ratio_new << ". Time: "<< time_ms <<" ms.\n";
-
-
-        */
-        // -------------------------- End  eq system -----------------
-
-
-    /*
-    std::cout << "evolucion de ratio" << std::endl;
-    for (const auto &[clave, valor] : deriv_ratio){
-        //std::cout << clave << " -> " << valor << std::endl;
-        std::cout << valor << std::endl;
-    }
-    std::cout << "evolucion de ratio-Times" << std::endl;
-    for (const auto &[clave, valor] : times_deriv){
-        //std::cout << clave << " -> " << valor << std::endl;
-        std::cout << valor << std::endl;
-    }
-    */
-
-
-
-
-
-
-// example of use:
-
-//          ./vi_init /Users/samucerezo/dev/src/Vi-init-cpp/data/MH_01

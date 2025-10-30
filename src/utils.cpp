@@ -70,6 +70,15 @@ std::optional<Eigen::Matrix3d> compute_Rij_with_c2p(
             f1_inliers.push_back(f1.col(i).normalized());
         }
     }
+    
+    // cuento los outliers que saco
+    int num_inliers = static_cast<int>(f0_inliers.size());
+    int num_outliers = N - num_inliers;
+
+    //std::cout << "[C2P] Total matches: " << N
+    //        << ", Inliers (RANSAC): " << num_inliers
+    //        << ", Outliers: " << num_outliers
+    //       << " (" << 100.0 * num_outliers / N << "%)\n";
 
     if (f0_inliers.size() < 8) return std::nullopt;
 

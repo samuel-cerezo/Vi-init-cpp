@@ -183,3 +183,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+#   Usage:
+#       /usr/bin/env python3 "/Users/samucerezo/dev/src/Vi-init-cpp/rmse_analysis.py" --csv /Users/samucerezo/dev/src/Vi-init-cpp/results/full_MH01_20251002_094742.csv --combined --final-summary --ref 14
