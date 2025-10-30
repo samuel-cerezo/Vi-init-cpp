@@ -1,6 +1,16 @@
-# 📌 VI Initialization using Small-Angle Approximation
+<p align="center">
+  <h1 align="center">A Closed-Form Solution to Full Visual-Inertial State Initialization</h1>
+  <p align="center">
+    <a><strong>Samuel Cerezo</strong></a> ·
+    <a><strong>Seong Hun Lee</strong></a> ·
+    <a><strong>Javier Civera</strong></a>
+  </p>
+  <h3 align="center">2025</h3>
+  <p align="center"><a href="https://www.arxiv.org/abs/2504.99999">ArXiv</a> | <a>Video</a> | <a href="https://samuel-cerezo.github.io/vi-init">Project Page</a></p>
+</p>
 
-This repository provides a C++ implementation of a **fully closed-form visual-inertial initialization algorithm**, based on the small rotation approximation.
+
+This repository provides a C++ implementation of a **fully closed-form visual-inertial initialization algorithm**, based on the following article: - [VI-init](https://samuel-cerezo.github.io/vi-init).
 
 ## ✨ Features
 
